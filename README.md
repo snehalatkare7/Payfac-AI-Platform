@@ -31,3 +31,6 @@ Feel free to open issues or submit pull requests for improvements or bug fixes.
 ## License
 
 Specify your license here (e.g., MIT, Apache 2.0, etc.).
+
+## ChatGPT Link
+https://chatgpt.com/gg/69abd19308788197b256d14094c38329
