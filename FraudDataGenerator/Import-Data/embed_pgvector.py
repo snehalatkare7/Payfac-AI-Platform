@@ -7,7 +7,7 @@ import fitz  # PyMuPDF
 # Load environment variables from .env file
 load_dotenv()
 
-PGVECTOR_URL = "postgresql://neondb_owner:npg_NwqA5n9YgkXl@ep-soft-heart-a85a6azm-pooler.eastus2.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
+PGVECTOR_URL = "PGVECTOR_URL"
 PDF_DIR = 'PDFFiles'
 MODEL_NAME = 'all-MiniLM-L6-v2'
 CHUNK_SIZE = 1000
