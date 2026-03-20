@@ -1,0 +1,274 @@
+All request payloads below match AnalyzeTransactionRequest and can be posted to /v1/analyze.
+
+Legitimate baseline transaction (no escalation)
+Scenario:
+A normal in-store grocery payment from a merchant with stable history.
+Agent and functionality coverage:
+Orchestrator runs Fraud Detection, Compliance, Risk Scoring. Investigation is skipped because score is expected <= 60.
+Sample transaction request:
+{
+"transaction_id": "txn-uc01-0001",
+"merchant_id": "m-grocery-101",
+"merchant_name": "FreshCart Market",
+"merchant_category_code": "5411",
+"amount_cents": 4599,
+"currency": "USD",
+"card_brand": "visa",
+"card_last_four": "4242",
+"card_bin": "411111",
+"is_card_present": true,
+"entry_mode": "chip",
+"ip_address": null,
+"billing_country": "US",
+"shipping_country": null,
+"customer_id": "cust-1001",
+"is_recurring": false
+}
+
+Card testing / BIN attack (full escalation path)
+Scenario:
+Multiple low-value CNP attempts with repeated BIN pattern and same IP.
+Agent and functionality coverage:
+Fraud Detection identifies card testing indicators, Compliance checks brand rules, Risk Scoring elevates to critical, Investigation runs because score > 60.
+Sample transaction request:
+{
+"transaction_id": "txn-uc02-0001",
+"merchant_id": "m-digital-777",
+"merchant_name": "QuickTopup Services",
+"merchant_category_code": "4814",
+"amount_cents": 99,
+"currency": "USD",
+"card_brand": "mastercard",
+"card_last_four": "1029",
+"card_bin": "543210",
+"is_card_present": false,
+"entry_mode": "ecommerce",
+"ip_address": "198.51.100.77",
+"billing_country": "US",
+"shipping_country": "US",
+"customer_id": "cust-7789",
+"is_recurring": false
+}
+
+Velocity abuse spike
+Scenario:
+Merchant suddenly processes high transaction frequency outside normal operating hours.
+Agent and functionality coverage:
+Fraud Detection uses velocity and similar-transaction retrieval, Risk Scoring weights velocity factor, possible escalation if risk > 60.
+Sample transaction request:
+{
+"transaction_id": "txn-uc03-0001",
+"merchant_id": "m-subscription-330",
+"merchant_name": "StreamPlus Global",
+"merchant_category_code": "4899",
+"amount_cents": 1299,
+"currency": "USD",
+"card_brand": "visa",
+"card_last_four": "6690",
+"card_bin": "400551",
+"is_card_present": false,
+"entry_mode": "card_on_file",
+"ip_address": "203.0.113.25",
+"billing_country": "US",
+"shipping_country": "US",
+"customer_id": "cust-vel-01",
+"is_recurring": true
+}
+
+Transaction laundering suspicion
+Scenario:
+Merchant category appears mismatched to actual payment behavior and ticket profile.
+Agent and functionality coverage:
+Fraud Detection checks laundering patterns, Compliance checks BRAM and brand controls, Risk Scoring aggregates severity.
+Sample transaction request:
+{
+"transaction_id": "txn-uc04-0001",
+"merchant_id": "m-retail-902",
+"merchant_name": "Urban Gift Shop",
+"merchant_category_code": "5947",
+"amount_cents": 98500,
+"currency": "USD",
+"card_brand": "mastercard",
+"card_last_four": "8841",
+"card_bin": "222300",
+"is_card_present": false,
+"entry_mode": "manual_keyed",
+"ip_address": "192.0.2.44",
+"billing_country": "US",
+"shipping_country": "GB",
+"customer_id": "cust-launder-88",
+"is_recurring": false
+}
+
+Synthetic identity pattern
+Scenario:
+New profile with thin history, CNP purchase, inconsistent customer footprint.
+Agent and functionality coverage:
+Fraud Detection checks synthetic identity indicators and episodic precedents, Risk Scoring incorporates historical risk context.
+Sample transaction request:
+{
+"transaction_id": "txn-uc05-0001",
+"merchant_id": "m-electronics-120",
+"merchant_name": "NovaTech Outlet",
+"merchant_category_code": "5732",
+"amount_cents": 74999,
+"currency": "USD",
+"card_brand": "visa",
+"card_last_four": "5518",
+"card_bin": "413245",
+"is_card_present": false,
+"entry_mode": "ecommerce",
+"ip_address": "198.51.100.140",
+"billing_country": "US",
+"shipping_country": "US",
+"customer_id": "cust-new-0009",
+"is_recurring": false
+}
+
+Account takeover suspicion
+Scenario:
+Known customer suddenly transacts from unfamiliar IP/geography and high amount.
+Agent and functionality coverage:
+Fraud Detection focuses on behavior anomaly, Compliance checks card-brand implications, Risk Scoring may trigger Investigation.
+Sample transaction request:
+{
+"transaction_id": "txn-uc06-0001",
+"merchant_id": "m-travel-220",
+"merchant_name": "SkyRoute Tickets",
+"merchant_category_code": "4511",
+"amount_cents": 132400,
+"currency": "USD",
+"card_brand": "amex",
+"card_last_four": "3401",
+"card_bin": "371449",
+"is_card_present": false,
+"entry_mode": "ecommerce",
+"ip_address": "203.0.113.199",
+"billing_country": "US",
+"shipping_country": "DE",
+"customer_id": "cust-ato-4431",
+"is_recurring": false
+}
+
+Friendly fraud risk on digital goods
+Scenario:
+Recurring digital merchant with dispute-prone profile and non-physical fulfillment.
+Agent and functionality coverage:
+Fraud Detection looks for friendly-fraud evidence, Compliance checks dispute programs, Risk Scoring combines fraud and compliance findings.
+Sample transaction request:
+{
+"transaction_id": "txn-uc07-0001",
+"merchant_id": "m-digitalmedia-615",
+"merchant_name": "PlayArcade Plus",
+"merchant_category_code": "5815",
+"amount_cents": 1999,
+"currency": "USD",
+"card_brand": "visa",
+"card_last_four": "9090",
+"card_bin": "476173",
+"is_card_present": false,
+"entry_mode": "card_on_file",
+"ip_address": "192.0.2.120",
+"billing_country": "US",
+"shipping_country": "US",
+"customer_id": "cust-ff-222",
+"is_recurring": true
+}
+
+Cross-merchant collusion indicator
+Scenario:
+Potentially coordinated transaction pattern across related merchants.
+Agent and functionality coverage:
+Fraud Detection probes collusion signatures and past cases, Risk Scoring applies high severity weighting, Investigation likely for deep narrative.
+Sample transaction request:
+{
+"transaction_id": "txn-uc08-0001",
+"merchant_id": "m-network-a-001",
+"merchant_name": "Alpha Commerce A",
+"merchant_category_code": "5999",
+"amount_cents": 25500,
+"currency": "USD",
+"card_brand": "mastercard",
+"card_last_four": "7712",
+"card_bin": "510510",
+"is_card_present": false,
+"entry_mode": "ecommerce",
+"ip_address": "198.51.100.201",
+"billing_country": "US",
+"shipping_country": "US",
+"customer_id": "cust-collude-17",
+"is_recurring": false
+}
+
+Compliance-focused brand monitoring (Visa VDMP/VFMP warning/violation context)
+Scenario:
+Transaction analyzed for a merchant already near dispute/fraud thresholds in long-term memory.
+Agent and functionality coverage:
+Compliance Agent is primary driver here, but still runs inside full orchestration with Fraud Detection and Risk Scoring.
+Sample transaction request:
+{
+"transaction_id": "txn-uc09-0001",
+"merchant_id": "m-visa-mon-303",
+"merchant_name": "Prime Supplements",
+"merchant_category_code": "5499",
+"amount_cents": 3099,
+"currency": "USD",
+"card_brand": "visa",
+"card_last_four": "1182",
+"card_bin": "400005",
+"is_card_present": false,
+"entry_mode": "ecommerce",
+"ip_address": "203.0.113.88",
+"billing_country": "US",
+"shipping_country": "CA",
+"customer_id": "cust-comp-31",
+"is_recurring": false
+}
+
+Batch operational triage
+Scenario:
+Operations team submits mixed transactions and receives bulk alerts with high-risk count.
+Agent and functionality coverage:
+Runs same multi-agent pipeline per transaction through /v1/analyze/batch in routes.py.
+Sample batch request:
+{
+"transactions": [
+{
+"transaction_id": "txn-uc10-0001",
+"merchant_id": "m-grocery-101",
+"merchant_name": "FreshCart Market",
+"merchant_category_code": "5411",
+"amount_cents": 3299,
+"currency": "USD",
+"card_brand": "visa",
+"card_last_four": "4242",
+"card_bin": "411111",
+"is_card_present": true,
+"entry_mode": "chip",
+"ip_address": null,
+"billing_country": "US",
+"shipping_country": null,
+"customer_id": "cust-batch-1",
+"is_recurring": false
+},
+{
+"transaction_id": "txn-uc10-0002",
+"merchant_id": "m-digital-777",
+"merchant_name": "QuickTopup Services",
+"merchant_category_code": "4814",
+"amount_cents": 100,
+"currency": "USD",
+"card_brand": "mastercard",
+"card_last_four": "1045",
+"card_bin": "543210",
+"is_card_present": false,
+"entry_mode": "ecommerce",
+"ip_address": "198.51.100.77",
+"billing_country": "US",
+"shipping_country": "US",
+"customer_id": "cust-batch-2",
+"is_recurring": false
+}
+]
+}
+
