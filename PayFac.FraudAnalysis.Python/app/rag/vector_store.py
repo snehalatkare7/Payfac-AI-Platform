@@ -1,7 +1,7 @@
 """NeonDB vector store integration for RAG.
 
-Provides typed search methods across the three vector collections:
-  - synthetic_transactions: Historical transaction data for pattern matching
+Provides typed search methods across vector collections:
+  - fraud_cases: Synthetic fraud transaction data from fraud_data_generator.py
   - compliance_documents: Card brand rules and compliance documentation
   - fraud_patterns: Known fraud pattern signatures
 """
@@ -20,11 +20,11 @@ class VectorStore:
     High-level vector store operations over NeonDB collections.
 
     Wraps the raw NeonDbClient with collection-aware methods and
-    automatic embedding generation.
+    automatic embedding generation using all-MiniLM-L6-v2 (384 dimensions).
     """
 
     # Collection names (tables in NeonDB)
-    TRANSACTIONS = "synthetic_transactions"
+    FRAUD_CASES = "fraud_cases"  # Main fraud data from fraud_data_generator.py
     COMPLIANCE = "compliance_documents"
     FRAUD_PATTERNS = "fraud_patterns"
 
@@ -33,36 +33,98 @@ class VectorStore:
         self._llm = llm_client
 
     async def initialize_collections(self) -> None:
-        """Create vector tables if they don't exist."""
-        for collection in [self.TRANSACTIONS, self.COMPLIANCE, self.FRAUD_PATTERNS]:
+        """Create vector tables if they don't exist.
+        
+        All embeddings use 384 dimensions (all-MiniLM-L6-v2).
+        """
+        # Fraud cases table (from fraud_data_generator.py)
+        await self._db.execute_command(f"""
+            CREATE TABLE IF NOT EXISTS {self.FRAUD_CASES} (
+                id TEXT PRIMARY KEY,
+                fraud_type TEXT NOT NULL,
+                fraud_subtype TEXT,
+                description TEXT NOT NULL,
+                mcc TEXT,
+                mcc_description TEXT,
+                merchant_name TEXT,
+                merchant_id TEXT,
+                country TEXT,
+                country_name TEXT,
+                city TEXT,
+                ip_country TEXT,
+                transaction_amount DECIMAL(12, 2),
+                currency_code TEXT,
+                transaction_channel TEXT,
+                transaction_type TEXT,
+                card_present BOOLEAN,
+                risk_level INTEGER,
+                risk_score DECIMAL(5, 4),
+                velocity_flag BOOLEAN,
+                geolocation_anomaly BOOLEAN,
+                device_fingerprint_match BOOLEAN,
+                unusual_hour BOOLEAN,
+                customer_age_band TEXT,
+                account_tenure_days INTEGER,
+                is_first_offense BOOLEAN,
+                reported_at TIMESTAMP WITH TIME ZONE,
+                detected_at TIMESTAMP WITH TIME ZONE,
+                resolved_at TIMESTAMP WITH TIME ZONE,
+                detection_method TEXT,
+                case_status TEXT,
+                confirmed_fraud BOOLEAN,
+                chargeback_filed BOOLEAN,
+                loss_amount DECIMAL(12, 2),
+                sar_filed BOOLEAN,
+                aml_flag BOOLEAN,
+                regulatory_notes TEXT,
+                embedding vector(384),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+
+        # Compliance documents table
+        await self._db.execute_command(f"""
+            CREATE TABLE IF NOT EXISTS {self.COMPLIANCE} (
+                id TEXT PRIMARY KEY,
+                embedding vector(384),
+                content TEXT NOT NULL,
+                metadata JSONB DEFAULT '{{}}'
+            )
+        """)
+
+        # Fraud patterns table
+        await self._db.execute_command(f"""
+            CREATE TABLE IF NOT EXISTS {self.FRAUD_PATTERNS} (
+                id TEXT PRIMARY KEY,
+                embedding vector(384),
+                content TEXT NOT NULL,
+                metadata JSONB DEFAULT '{{}}'
+            )
+        """)
+
+        # Create indexes for vector similarity search
+        for table in [self.FRAUD_CASES, self.COMPLIANCE, self.FRAUD_PATTERNS]:
             await self._db.execute_command(f"""
-                CREATE TABLE IF NOT EXISTS {collection} (
-                    id TEXT PRIMARY KEY,
-                    embedding vector(1536),
-                    content TEXT NOT NULL,
-                    metadata JSONB DEFAULT '{{}}'
-                )
-            """)
-            await self._db.execute_command(f"""
-                CREATE INDEX IF NOT EXISTS idx_{collection}_embedding
-                ON {collection}
+                CREATE INDEX IF NOT EXISTS idx_{table}_embedding
+                ON {table}
                 USING ivfflat (embedding vector_cosine_ops)
                 WITH (lists = 100)
             """)
-        logger.info("Vector store collections initialized")
 
-    # ── Transaction Search ────────────────────────────────────────────
+        logger.info("✅ Vector store collections initialized (384-dim embeddings)")
 
-    async def search_similar_transactions(
+    # ── Fraud Cases Search ────────────────────────────────────────────
+
+    async def search_similar_fraud_cases(
         self,
         query: str,
         top_k: int = 10,
         min_score: float = 0.75,
-        merchant_id: Optional[str] = None,
-        card_brand: Optional[str] = None,
+        fraud_type: Optional[str] = None,
+        country: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """
-        Search for historically similar transactions.
+        Search for historically similar fraud cases from fraud_cases table.
 
         Used by the Fraud Detection Agent to find past transactions
         that match a suspected fraud pattern.
@@ -71,19 +133,19 @@ class VectorStore:
             query: Natural language description of the pattern to search.
             top_k: Maximum results.
             min_score: Minimum cosine similarity.
-            merchant_id: Optional filter by merchant.
-            card_brand: Optional filter by card brand.
+            fraud_type: Optional filter by fraud type.
+            country: Optional filter by country.
         """
         embedding = await self._llm.generate_embedding(query)
 
         metadata_filter = {}
-        if merchant_id:
-            metadata_filter["merchant_id"] = merchant_id
-        if card_brand:
-            metadata_filter["card_brand"] = card_brand
+        if fraud_type:
+            metadata_filter["fraud_type"] = fraud_type
+        if country:
+            metadata_filter["country"] = country
 
         results = await self._db.vector_search(
-            collection=self.TRANSACTIONS,
+            collection=self.FRAUD_CASES,
             query_embedding=embedding,
             top_k=top_k,
             min_score=min_score,
@@ -91,8 +153,8 @@ class VectorStore:
         )
 
         logger.info(
-            "Transaction search: query='%s...', results=%d",
-            query[:60], len(results),
+            "Fraud case search: query='%s...', fraud_type=%s, results=%d",
+            query[:60], fraud_type or "any", len(results),
         )
         return results
 
@@ -177,18 +239,18 @@ class VectorStore:
         )
         return results
 
-    # ── Ingest Methods (for loading data) ─────────────────────────────
+    # ── Ingest Methods (for loading data) ─��───────────────────────────
 
-    async def ingest_transaction(
+    async def ingest_fraud_case(
         self,
-        transaction_id: str,
+        case_id: str,
         text: str,
         metadata: dict[str, Any],
     ) -> None:
-        """Ingest a transaction record into the vector store."""
+        """Ingest a fraud case record from fraud_cases table into vector store."""
         embedding = await self._llm.generate_embedding(text)
         await self._db.upsert_vector(
-            self.TRANSACTIONS, transaction_id, embedding, text, metadata,
+            self.FRAUD_CASES, case_id, embedding, text, metadata,
         )
 
     async def ingest_compliance_doc(

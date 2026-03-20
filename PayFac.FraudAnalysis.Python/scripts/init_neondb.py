@@ -1,7 +1,9 @@
 """Initialize NeonDB schema and seed data.
 
-Run this script to set up the NeonDB vector tables and
-optionally seed with sample fraud patterns.
+Run this script to set up the NeonDB vector tables (using 384-dim embeddings)
+and optionally seed with sample fraud patterns.
+
+This script now integrates the fraud_cases table from fraud_data_generator.py.
 
 Usage:
     python -m scripts.init_neondb
@@ -185,9 +187,9 @@ async def main():
     """Initialize NeonDB schema and seed with sample data."""
     settings = get_settings()
 
-    print("=" * 60)
-    print("PayFac Fraud Analysis - NeonDB Initialization")
-    print("=" * 60)
+    print("=" * 70)
+    print("PayFac Fraud Analysis - NeonDB Initialization (384-dim embeddings)")
+    print("=" * 70)
 
     # Connect to NeonDB
     print("\n1. Connecting to NeonDB...")
@@ -195,16 +197,20 @@ async def main():
     await neondb.connect()
     print("   ✅ Connected")
 
-    # Initialize LLM for embeddings
+    # Initialize LLM for embeddings (all-MiniLM-L6-v2)
     print("\n2. Initializing embedding model...")
     llm = LLMClient()
-    print("   ✅ Initialized")
+    await llm.generate_embedding("test")  # Trigger model loading
+    print("   ✅ Initialized: all-MiniLM-L6-v2 (384 dimensions)")
 
-    # Create vector store tables
-    print("\n3. Creating vector store collections...")
+    # Create vector store tables (fraud_cases, compliance, fraud_patterns)
+    print("\n3. Creating vector store collections (384-dim)...")
     vector_store = VectorStore(neondb, llm)
     await vector_store.initialize_collections()
-    print("   ✅ Collections created: synthetic_transactions, compliance_documents, fraud_patterns")
+    print("   ✅ Collections created:")
+    print("      - fraud_cases (from fraud_data_generator.py)")
+    print("      - compliance_documents")
+    print("      - fraud_patterns")
 
     # Create long-term memory tables
     print("\n4. Creating long-term memory tables...")
@@ -241,11 +247,13 @@ async def main():
     # Close connection
     await neondb.close()
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("✅ NeonDB initialization complete!")
     print(f"   Fraud patterns seeded: {len(SAMPLE_FRAUD_PATTERNS)}")
     print(f"   Compliance docs seeded: {len(SAMPLE_COMPLIANCE_DOCS)}")
-    print("=" * 60)
+    print(f"   Embedding model: all-MiniLM-L6-v2 (384 dimensions)")
+    print(f"   Vector DB: NeonDB with pgvector (ivfflat indexes)")
+    print("=" * 70)
 
 
 if __name__ == "__main__":

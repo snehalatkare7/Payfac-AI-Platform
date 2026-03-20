@@ -1,7 +1,12 @@
 """PayFac Fraud Analysis AI Platform - Configuration."""
 
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_FILE = PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -40,7 +45,8 @@ class Settings(BaseSettings):
     rag_similarity_threshold: float = 0.75
     rag_top_k: int = 10
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # Resolve .env from project root so scripts work from any cwd.
+    model_config = {"env_file": str(ENV_FILE), "env_file_encoding": "utf-8"}
 
 
 @lru_cache
