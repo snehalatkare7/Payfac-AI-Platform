@@ -115,7 +115,7 @@ class VectorStore:
 
     # ── Fraud Cases Search ────────────────────────────────────────────
 
-    async def search_similar_fraud_cases(
+    async def search_similar_transaction(
         self,
         query: str,
         top_k: int = 10,

@@ -1,0 +1,1149 @@
+{
+  "suite_name": "payfac_demo_end_to_end",
+  "generated_on": "2026-03-27",
+  "version": "2.0",
+  "notes": [
+    "Comprehensive demo suite covering ALL agents, memory tiers, infrastructure components, and data tables.",
+    "Grounded in live NeonDB data: fraud_patterns (7), compliance_documents (5), fraud_cases (1000), policy_rules (6740, brands: visa/mastercard/unknown), policy_documents (3440), episodic_memory (8), analysis_decisions (8).",
+    "merchant_risk_profiles and learned_fraud_patterns are initially empty — populated during test runs.",
+    "Each test case lists which components it exercises and which NeonDB tables are queried by agents during execution."
+  ],
+  "data_references": {
+    "fraud_patterns": [
+      "pattern-card-testing-001",
+      "pattern-bin-attack-001",
+      "pattern-transaction-laundering-001",
+      "pattern-velocity-abuse-001",
+      "pattern-synthetic-identity-001",
+      "pattern-friendly-fraud-001",
+      "pattern-cross-merchant-collusion-001"
+    ],
+    "compliance_documents": [
+      "compliance-visa-vdmp-001",
+      "compliance-visa-vfmp-001",
+      "compliance-mc-ecm-001",
+      "compliance-mc-bram-001",
+      "compliance-amex-optblue-001"
+    ],
+    "fraud_cases_types_in_db": [
+      "account_takeover",
+      "identity_theft",
+      "friendly_fraud",
+      "card_testing",
+      "transaction_laundering",
+      "synthetic_identity"
+    ],
+    "policy_rules": {
+      "total_count": 6740,
+      "brands": ["visa", "mastercard", "unknown"],
+      "categories": ["transaction_processing"]
+    },
+    "policy_documents": {
+      "total_count": 3440,
+      "sources": [
+        "visa industry-charges-for-dispute-resolution.pdf",
+        "mastercard rules"
+      ]
+    },
+    "analysis_decisions_columns": [
+      "decision_id", "merchant_id", "transaction_ids", "fraud_type",
+      "risk_score", "decision", "was_correct", "feedback_notes",
+      "decided_at", "feedback_at"
+    ]
+  },
+  "component_coverage_legend": {
+    "fraud_detection_agent": "Agentic RAG with fraud_patterns + fraud_cases vector search",
+    "compliance_agent": "Agentic RAG with compliance_documents vector search",
+    "risk_scoring_agent": "Weighted score: 40% fraud, 30% compliance, 15% velocity, 15% historical",
+    "investigation_agent": "Deep-dive with episodic_memory recall (triggered when risk_score > 60)",
+    "orchestrator": "LangGraph state machine routing all agents",
+    "redis_short_term": "Session context (stm:session:*), agent results (stm:agent:*), velocity (stm:velocity:*)",
+    "redis_velocity_merchant": "stm:velocity:merchant:{merchant_id} sorted set (60-min window)",
+    "redis_velocity_bin": "stm:velocity:bin:{card_bin} sorted set (5-min window)",
+    "kafka_events": "8 topics: lifecycle, detection, compliance, risk, investigation, coordination, memory",
+    "long_term_memory": "NeonDB: merchant_risk_profiles, learned_fraud_patterns, analysis_decisions",
+    "episodic_memory": "NeonDB: episodic_memory table with 1536-dim vector embeddings",
+    "policy_data": "NeonDB: policy_rules (6740) + policy_documents (3440) for Visa/MC rules",
+    "agentic_rag_tools": "7 tools: search_similar_transactions, search_compliance_documents, search_fraud_patterns, recall_past_investigations, get_merchant_history, check_velocity, evaluate_retrieval_sufficiency"
+  },
+  "infra_validation_steps": {
+    "redis_short_term": {
+      "description": "Validate Redis session lifecycle during orchestration",
+      "checks": [
+        "After /v1/analyze: stm:agent:{session_id}:fraud_detection is created",
+        "After /v1/analyze: stm:agent:{session_id}:compliance is created",
+        "After /v1/analyze: stm:agent:{session_id}:risk_scoring is created",
+        "After aggregation: all stm:session:* and stm:agent:* keys for that session are deleted",
+        "Velocity keys stm:velocity:merchant:{merchant_id} persist beyond session"
+      ]
+    },
+    "redis_velocity": {
+      "description": "Validate velocity tracking in Redis sorted sets",
+      "checks": [
+        "stm:velocity:merchant:{merchant_id}: sorted set with timestamp scores (60-min window)",
+        "stm:velocity:bin:{card_bin}: sorted set with timestamp scores (5-min window)",
+        "check_velocity() tool returns transaction count + HIGH/Normal status",
+        "Rapid same-merchant requests increment velocity count"
+      ]
+    },
+    "kafka_events": {
+      "description": "Validate Kafka event publishing order and correlation",
+      "expected_event_sequence": [
+        "analysis.started (source: orchestrator)",
+        "fraud.detected OR fraud.cleared (source: fraud_detection)",
+        "compliance.violation.found OR compliance.check.passed (source: compliance)",
+        "risk.score.calculated (source: risk_scoring)",
+        "investigation.opened (source: investigation, only if risk_score > 60)",
+        "investigation.closed (source: investigation, only if opened)",
+        "memory.episode.recorded (source: orchestrator)",
+        "analysis.completed (source: orchestrator)"
+      ],
+      "checks": [
+        "All events share same correlation_id for one transaction",
+        "Events published to correct topics (fraud.analysis.lifecycle, fraud.detection.results, etc.)",
+        "Event payloads contain merchant_id, transaction_id, session_id"
+      ]
+    },
+    "long_term_memory": {
+      "description": "Validate NeonDB long-term storage after orchestration",
+      "checks": [
+        "analysis_decisions row count increases after each /v1/analyze call",
+        "New row contains: decision_id, merchant_id, transaction_ids, fraud_type, risk_score, decision",
+        "Feedback via /v1/feedback updates was_correct and feedback_notes columns",
+        "merchant_risk_profiles gets upsert for merchant after first analysis"
+      ]
+    },
+    "episodic_memory": {
+      "description": "Validate episodic memory recording and recall",
+      "checks": [
+        "After each analysis: new row in episodic_memory with 1536-dim embedding",
+        "Metadata includes: merchant_id, fraud_type, outcome, agents_involved, transaction_count",
+        "recall_past_investigations() tool returns semantically similar past episodes",
+        "Investigation agent uses recall to find precedent cases"
+      ]
+    },
+    "policy_data": {
+      "description": "Validate policy tables availability for compliance/future policy agent",
+      "checks": [
+        "policy_rules: 6740 rows, brands: visa, mastercard, unknown",
+        "policy_documents: 3440 rows from Visa/MC PDF source files",
+        "Compliance agent's search_compliance_documents() can retrieve from these tables",
+        "Data available for future dedicated policy agent node in orchestrator"
+      ]
+    }
+  },
+  "test_cases": [
+    {
+      "id": "TC-001",
+      "title": "System health — all infrastructure connected",
+      "description": "Validates NeonDB, Redis, and Kafka connectivity",
+      "component_coverage": ["api", "neondb", "redis_short_term", "kafka_events"],
+      "request": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "expected": {
+        "status_code": 200,
+        "body_fields": ["status", "version", "neondb_connected", "redis_connected", "kafka_connected"],
+        "body_assertions": [
+          "status in ['healthy','degraded']",
+          "version == '1.0.0'",
+          "neondb_connected == true",
+          "redis_connected == true",
+          "kafka_connected == true"
+        ]
+      }
+    },
+    {
+      "id": "TC-002",
+      "title": "Legitimate grocery transaction — low risk baseline",
+      "description": "In-store chip payment at a grocery store. Expects low risk score, no investigation. Validates all 3 core agents run, Redis session is created and cleaned, Kafka lifecycle events are published, and analysis_decisions gets a new row.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_short_term", "redis_velocity_merchant", "kafka_events",
+        "long_term_memory", "episodic_memory", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (vector search for card_testing/velocity patterns)",
+        "fraud_cases (vector search for similar transactions)",
+        "compliance_documents (Visa VDMP/VFMP rules for visa card)",
+        "episodic_memory (recall past investigations for m-grocery-101)",
+        "merchant_risk_profiles (get_merchant_history for m-grocery-101)",
+        "analysis_decisions (new row inserted after completion)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0001",
+          "merchant_id": "m-grocery-101",
+          "merchant_name": "FreshCart Market",
+          "merchant_category_code": "5411",
+          "amount_cents": 4599,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "4242",
+          "card_bin": "411111",
+          "is_card_present": true,
+          "entry_mode": "chip",
+          "ip_address": null,
+          "billing_country": "US",
+          "shipping_country": null,
+          "customer_id": "cust-1001",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "risk_score <= 40",
+          "risk_level in ['low','medium']",
+          "fraud_type in ['unknown','card_testing'] (LLM-dependent)",
+          "analyzed_by_agents includes ['fraud_detection','compliance','risk_scoring']",
+          "analyzed_by_agents does NOT include 'investigation' (score <= 60)",
+          "confidence between 0.0 and 1.0",
+          "evidence is a non-empty array",
+          "recommendations is a non-empty array",
+          "summary is a coherent prose sentence (not raw markdown bullets)"
+        ]
+      },
+      "kafka_events_expected": [
+        "analysis.started", "fraud.detected OR fraud.cleared",
+        "compliance.check.passed OR compliance.violation.found",
+        "risk.score.calculated", "memory.episode.recorded", "analysis.completed"
+      ],
+      "table_basis": ["compliance-visa-vdmp-001", "pattern-card-testing-001"]
+    },
+    {
+      "id": "TC-003",
+      "title": "Card testing pattern — micro CNP with repeated BIN",
+      "description": "Sub-dollar CNP ecommerce transaction at a telecom service. Matches pattern-card-testing-001 indicators: small amounts, rapid succession potential, same BIN. Fraud agent should search fraud_patterns and fraud_cases for card_testing matches.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "redis_velocity_bin", "kafka_events",
+        "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (match pattern-card-testing-001: small_amounts, same_bin, high_decline_rate)",
+        "fraud_cases (vector search for similar card testing cases)",
+        "compliance_documents (Visa rules for CNP transaction)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0002",
+          "merchant_id": "m-digital-777",
+          "merchant_name": "QuickTopup Services",
+          "merchant_category_code": "4814",
+          "amount_cents": 99,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "1388",
+          "card_bin": "411111",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.77",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-ct-01",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['card_testing','bin_attack','unknown']",
+          "risk_score >= 20 (micro-amount CNP is suspicious)",
+          "evidence references card testing indicators or micro amounts",
+          "confidence between 0.0 and 1.0"
+        ]
+      },
+      "table_basis": ["pattern-card-testing-001", "fraud_cases"]
+    },
+    {
+      "id": "TC-004",
+      "title": "BIN attack — automated sequential card testing",
+      "description": "Micro-dollar CNP transaction at gaming merchant with a common BIN. Matches pattern-bin-attack-001 indicators: sequential_pans, micro_amounts, automated_speed. Also triggers BIN velocity tracking in Redis (stm:velocity:bin:543210).",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_bin", "redis_velocity_merchant", "kafka_events",
+        "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (match pattern-bin-attack-001: sequential_pans, micro_amounts)",
+        "fraud_cases (vector search for BIN attack cases)",
+        "compliance_documents (Mastercard BRAM for high-risk MCC 5816)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0003",
+          "merchant_id": "m-digital-888",
+          "merchant_name": "FastPay Games",
+          "merchant_category_code": "5816",
+          "amount_cents": 100,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "1029",
+          "card_bin": "543210",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "203.0.113.55",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-bin-01",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['bin_attack','card_testing','unknown']",
+          "risk analysis considers BIN pattern and micro amount",
+          "if risk_score > 60: analyzed_by_agents includes 'investigation'",
+          "if risk_score <= 60: no investigation (but BIN patterns noted)"
+        ]
+      },
+      "redis_velocity_note": "Check stm:velocity:bin:543210 and stm:velocity:merchant:m-digital-888 after execution",
+      "table_basis": ["pattern-bin-attack-001", "compliance-mc-bram-001"]
+    },
+    {
+      "id": "TC-005",
+      "title": "Transaction laundering — MCC mismatch with international shipping",
+      "description": "High-value CNP manual-keyed transaction at a gift shop with billing/shipping country mismatch (US/GB). Matches pattern-transaction-laundering-001 indicators: mcc_mismatch, international_cards, website_mismatch. Compliance agent checks Mastercard BRAM for high-risk merchant indicators.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "long_term_memory", "episodic_memory",
+        "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (match pattern-transaction-laundering-001: mcc_mismatch, international_cards)",
+        "fraud_cases (vector search for laundering patterns)",
+        "compliance_documents (compliance-mc-bram-001: BRAM due diligence requirements)",
+        "policy_rules (Mastercard rules related to merchant risk assessment)",
+        "episodic_memory (recall similar past investigation episodes)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0004",
+          "merchant_id": "m-retail-902",
+          "merchant_name": "Urban Gift Shop",
+          "merchant_category_code": "5947",
+          "amount_cents": 98500,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "8841",
+          "card_bin": "222300",
+          "is_card_present": false,
+          "entry_mode": "manual_keyed",
+          "ip_address": "192.0.2.44",
+          "billing_country": "US",
+          "shipping_country": "GB",
+          "customer_id": "cust-launder-88",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['transaction_laundering','unknown'] (depends on LLM detection)",
+          "fraud_type is NEVER 'card_testing' (post-fix: fallback to UNKNOWN)",
+          "compliance analysis discusses BRAM or Mastercard merchant risk requirements",
+          "evidence references country mismatch (US/GB) or manual_keyed entry",
+          "risk_level in ['medium','high','critical','severe'] for strong signal cases",
+          "summary is coherent prose (not markdown bullets)"
+        ]
+      },
+      "table_basis": ["pattern-transaction-laundering-001", "compliance-mc-bram-001"]
+    },
+    {
+      "id": "TC-006",
+      "title": "Velocity abuse — sudden volume spike on a single merchant",
+      "description": "Multiple rapid transactions at a fuel station. Matches pattern-velocity-abuse-001 indicators: volume_spike, off_hours, identical_amounts. The check_velocity() RAG tool queries Redis stm:velocity:merchant:{merchant_id} sorted set.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (match pattern-velocity-abuse-001: volume_spike, identical_amounts)",
+        "fraud_cases (vector search for velocity abuse patterns)",
+        "compliance_documents (Visa VDMP for dispute monitoring)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0005",
+          "merchant_id": "m-fuel-550",
+          "merchant_name": "QuickStop Gas Station",
+          "merchant_category_code": "5541",
+          "amount_cents": 5000,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "7744",
+          "card_bin": "411111",
+          "is_card_present": true,
+          "entry_mode": "contactless",
+          "ip_address": null,
+          "billing_country": "US",
+          "shipping_country": null,
+          "customer_id": "cust-vel-01",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['velocity_abuse','unknown']",
+          "risk analysis considers velocity patterns",
+          "evidence mentions velocity or transaction frequency"
+        ]
+      },
+      "demo_tip": "Run this test case 3-4 times rapidly to see velocity count increase in Redis stm:velocity:merchant:m-fuel-550. The check_velocity() tool will report elevated counts on subsequent runs.",
+      "table_basis": ["pattern-velocity-abuse-001", "compliance-visa-vdmp-001"]
+    },
+    {
+      "id": "TC-007",
+      "title": "Visa VDMP compliance — dispute monitoring for supplement merchant",
+      "description": "CNP ecommerce at a supplement e-store (high-dispute MCC 5499) with cross-border shipping (US→CA). Compliance agent searches compliance-visa-vdmp-001 and compliance-visa-vfmp-001 documents for Visa dispute thresholds (0.9% ratio, 100 disputes/month).",
+      "component_coverage": [
+        "compliance_agent", "fraud_detection_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "compliance_documents (compliance-visa-vdmp-001: dispute ratio 0.9%, 100 disputes/month)",
+        "compliance_documents (compliance-visa-vfmp-001: fraud amount $75K, fraud ratio 0.9%)",
+        "fraud_patterns (general pattern search)",
+        "policy_rules (Visa transaction processing rules)",
+        "policy_documents (Visa dispute resolution PDF)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0006",
+          "merchant_id": "m-visa-mon-303",
+          "merchant_name": "Prime Supplements",
+          "merchant_category_code": "5499",
+          "amount_cents": 3099,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "1182",
+          "card_bin": "400005",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "203.0.113.88",
+          "billing_country": "US",
+          "shipping_country": "CA",
+          "customer_id": "cust-comp-31",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "compliance analysis references Visa VDMP/VFMP thresholds or dispute monitoring",
+          "risk_score reflects compliance signal (not just fraud)",
+          "analyzed_by_agents includes compliance"
+        ]
+      },
+      "table_basis": ["compliance-visa-vdmp-001", "compliance-visa-vfmp-001"]
+    },
+    {
+      "id": "TC-008",
+      "title": "Mastercard ECM/BRAM — recurring subscription chargeback monitoring",
+      "description": "Recurring card-on-file payment at a streaming service. Compliance agent searches compliance-mc-ecm-001 (ECM: 100 chargebacks + 1.5% ratio thresholds) and compliance-mc-bram-001 (BRAM: high-risk MCC due diligence).",
+      "component_coverage": [
+        "compliance_agent", "fraud_detection_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "compliance_documents (compliance-mc-ecm-001: ECM thresholds 100 chargebacks + 1.5% ratio)",
+        "compliance_documents (compliance-mc-bram-001: BRAM high-risk MCC list)",
+        "fraud_patterns (friendly_fraud pattern for subscription disputes)",
+        "policy_rules (Mastercard transaction processing rules)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0007",
+          "merchant_id": "m-subscription-330",
+          "merchant_name": "StreamPlus Global",
+          "merchant_category_code": "4899",
+          "amount_cents": 1299,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "6690",
+          "card_bin": "510510",
+          "is_card_present": false,
+          "entry_mode": "card_on_file",
+          "ip_address": "203.0.113.25",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-ecm-01",
+          "is_recurring": true
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "compliance analysis references ECM thresholds or BRAM requirements",
+          "recommendations include coherent compliance actions",
+          "analyzed_by_agents includes compliance"
+        ]
+      },
+      "table_basis": ["compliance-mc-ecm-001", "compliance-mc-bram-001"]
+    },
+    {
+      "id": "TC-009",
+      "title": "Synthetic identity — new customer, high-value electronics",
+      "description": "First-time customer purchasing high-value electronics. Matches pattern-synthetic-identity-001 indicators: thin_credit_file, rapid_account_creation, bust_out. Fraud_cases DB has confirmed synthetic_identity cases for vector comparison.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "episodic_memory", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (match pattern-synthetic-identity-001: thin_credit_file, bust_out)",
+        "fraud_cases (vector search for synthetic identity cases in DB)",
+        "compliance_documents (Visa rules for CNP electronics)",
+        "episodic_memory (recall past synthetic identity investigations)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0008",
+          "merchant_id": "m-electronics-120",
+          "merchant_name": "NovaTech Outlet",
+          "merchant_category_code": "5732",
+          "amount_cents": 74999,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "5518",
+          "card_bin": "413245",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.140",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-new-0009",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud analysis considers synthetic identity or high-value first purchase",
+          "fraud_type in ['synthetic_identity','unknown']",
+          "confidence between 0.0 and 1.0",
+          "evidence references transaction characteristics"
+        ]
+      },
+      "table_basis": ["pattern-synthetic-identity-001", "fraud_cases"]
+    },
+    {
+      "id": "TC-010",
+      "title": "Friendly fraud — recurring digital subscription dispute risk",
+      "description": "Recurring card-on-file at a gaming platform. Matches pattern-friendly-fraud-001 indicators: repeat_chargebacks, digital_goods, subscription. Fraud_cases DB contains confirmed friendly_fraud cases with family_fraud subtype.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (match pattern-friendly-fraud-001: digital_goods, subscription)",
+        "fraud_cases (vector search for friendly fraud cases, incl. family_fraud subtype)",
+        "compliance_documents (Visa VDMP for dispute monitoring on digital goods)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0009",
+          "merchant_id": "m-digitalmedia-615",
+          "merchant_name": "PlayArcade Plus",
+          "merchant_category_code": "5815",
+          "amount_cents": 1999,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "9090",
+          "card_bin": "476173",
+          "is_card_present": false,
+          "entry_mode": "card_on_file",
+          "ip_address": "192.0.2.120",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-ff-222",
+          "is_recurring": true
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['friendly_fraud','unknown']",
+          "recommendations include monitoring or review actions",
+          "evidence references recurring/subscription context"
+        ]
+      },
+      "table_basis": ["pattern-friendly-fraud-001", "compliance-visa-vdmp-001"]
+    },
+    {
+      "id": "TC-011",
+      "title": "Cross-merchant collusion — coordinated network detection",
+      "description": "CNP transaction from a suspicious 'catch-all' merchant (MCC 5999). Matches pattern-cross-merchant-collusion-001 indicators: shared_ownership, circular_transactions, common_ip, coordinated_timing. High-risk scenario likely to trigger investigation agent.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent",
+        "investigation_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events",
+        "episodic_memory", "long_term_memory", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (match pattern-cross-merchant-collusion-001)",
+        "fraud_cases (vector search for collusion cases)",
+        "compliance_documents (Mastercard BRAM for merchant network risk)",
+        "episodic_memory (recall past collusion investigations)",
+        "merchant_risk_profiles (get_merchant_history for cross-reference)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0010",
+          "merchant_id": "m-network-a-001",
+          "merchant_name": "Alpha Commerce A",
+          "merchant_category_code": "5999",
+          "amount_cents": 25500,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "7712",
+          "card_bin": "510510",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.201",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-collude-17",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud analysis considers collusion indicators",
+          "if risk_score > 60: investigation agent runs deep-dive analysis",
+          "if investigation runs: analyzed_by_agents includes 'investigation'",
+          "evidence references network or merchant relationship concerns"
+        ]
+      },
+      "table_basis": ["pattern-cross-merchant-collusion-001", "compliance-mc-bram-001"]
+    },
+    {
+      "id": "TC-012",
+      "title": "Account takeover — high-value airline ticket with SIM swap indicators",
+      "description": "High-value airline ticket purchase matching fraud_cases with account_takeover type (credential_stuffing subtype). Fraud_cases DB contains confirmed account_takeover cases in MCC 4511 (Airlines) with high risk scores.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "episodic_memory", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_cases (vector search matches account_takeover cases: MCC 4511, high amounts, credential_stuffing)",
+        "fraud_patterns (general pattern matching)",
+        "compliance_documents (Visa VFMP for fraud monitoring on high-value CNP)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0011",
+          "merchant_id": "m-airline-401",
+          "merchant_name": "SkyWings International",
+          "merchant_category_code": "4511",
+          "amount_cents": 245000,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "3377",
+          "card_bin": "400005",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.99",
+          "billing_country": "US",
+          "shipping_country": "FR",
+          "customer_id": "cust-ato-55",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['account_takeover','unknown','synthetic_identity']",
+          "high value CNP with country mismatch elevates risk",
+          "evidence references high amount, CNP, or cross-border elements",
+          "risk_score reflects multiple risk signals"
+        ]
+      },
+      "table_basis": ["fraud_cases (account_takeover type)", "compliance-visa-vfmp-001"]
+    },
+    {
+      "id": "TC-013",
+      "title": "Amex OptBlue compliance — high-value travel merchant",
+      "description": "High-value CNP at a travel agency with Amex card. Compliance agent searches compliance-amex-optblue-001 for OptBlue program rules (1% chargeback ratio, $1M volume transition threshold).",
+      "component_coverage": [
+        "compliance_agent", "fraud_detection_agent", "risk_scoring_agent", "orchestrator",
+        "redis_velocity_merchant", "kafka_events", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "compliance_documents (compliance-amex-optblue-001: OptBlue 1% chargeback, $1M threshold)",
+        "fraud_patterns (general pattern search)",
+        "policy_rules (if cross-referencing Amex rules)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0012",
+          "merchant_id": "m-travel-220",
+          "merchant_name": "SkyRoute Tickets",
+          "merchant_category_code": "4511",
+          "amount_cents": 132400,
+          "currency": "USD",
+          "card_brand": "amex",
+          "card_last_four": "3401",
+          "card_bin": "371449",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "203.0.113.199",
+          "billing_country": "US",
+          "shipping_country": "DE",
+          "customer_id": "cust-amex-4431",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "compliance analysis references Amex OptBlue program or Amex-specific rules",
+          "response schema remains consistent (all fields present)",
+          "analyzed_by_agents includes compliance"
+        ]
+      },
+      "table_basis": ["compliance-amex-optblue-001"]
+    },
+    {
+      "id": "TC-014",
+      "title": "High-risk investigation trigger — escalation deep-dive",
+      "description": "Deliberately crafted high-risk scenario: large CNP transfer at a gambling-adjacent merchant (MCC 7995) with country mismatches and suspicious IP. Designed to trigger risk_score > 60 and activate investigation_agent. Investigation agent uses recall_past_investigations to find precedent cases in episodic_memory.",
+      "component_coverage": [
+        "fraud_detection_agent", "compliance_agent", "risk_scoring_agent",
+        "investigation_agent", "orchestrator",
+        "redis_short_term", "redis_velocity_merchant", "kafka_events",
+        "long_term_memory", "episodic_memory", "agentic_rag_tools"
+      ],
+      "tables_queried_by_agents": [
+        "fraud_patterns (multiple pattern matches: velocity, laundering, BIN)",
+        "fraud_cases (vector search for high-risk transaction patterns)",
+        "compliance_documents (BRAM for MCC 7995 gambling, ECM thresholds)",
+        "episodic_memory (investigation_agent: recall_past_investigations for similar high-risk cases)",
+        "merchant_risk_profiles (get_merchant_history for m-risky-999)",
+        "analysis_decisions (new row with 'escalated' or high-risk decision)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0013",
+          "merchant_id": "m-risky-999",
+          "merchant_name": "Lucky Strike Digital",
+          "merchant_category_code": "7995",
+          "amount_cents": 500000,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "9999",
+          "card_bin": "222100",
+          "is_card_present": false,
+          "entry_mode": "manual_keyed",
+          "ip_address": "203.0.113.66",
+          "billing_country": "US",
+          "shipping_country": "RU",
+          "customer_id": "cust-risk-max",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "risk_score likely > 60 (multiple strong risk signals)",
+          "if risk_score > 60: analyzed_by_agents includes 'investigation'",
+          "if risk_score > 60: summary mentions investigation findings or deep-dive",
+          "risk_level in ['high','critical','severe']",
+          "evidence should be multi-factor (amount, country mismatch, MCC risk, CNP)",
+          "recommendations include concrete escalation actions"
+        ]
+      },
+      "kafka_events_expected": [
+        "analysis.started", "fraud.detected OR fraud.escalated",
+        "compliance.violation.found OR compliance.check.passed",
+        "risk.score.calculated",
+        "investigation.opened (if score > 60)", "investigation.closed (if opened)",
+        "memory.episode.recorded", "analysis.completed"
+      ],
+      "table_basis": ["compliance-mc-bram-001 (MCC 7995 is high-risk)", "pattern-transaction-laundering-001"]
+    },
+    {
+      "id": "TC-015",
+      "title": "Batch analysis — mixed risk transaction batch",
+      "description": "Submit 2 transactions in a single batch: one low-risk grocery and one suspicious gaming micro-transaction. Validates batch endpoint processes all transactions and returns aggregated results.",
+      "component_coverage": [
+        "api_batch", "fraud_detection_agent", "compliance_agent", "risk_scoring_agent",
+        "orchestrator", "kafka_events"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze/batch",
+        "json": {
+          "transactions": [
+            {
+              "transaction_id": "txn-demo-batch-001",
+              "merchant_id": "m-grocery-101",
+              "merchant_name": "FreshCart Market",
+              "merchant_category_code": "5411",
+              "amount_cents": 3299,
+              "currency": "USD",
+              "card_brand": "visa",
+              "card_last_four": "4242",
+              "card_bin": "411111",
+              "is_card_present": true,
+              "entry_mode": "chip",
+              "ip_address": null,
+              "billing_country": "US",
+              "shipping_country": null,
+              "customer_id": "cust-batch-1",
+              "is_recurring": false
+            },
+            {
+              "transaction_id": "txn-demo-batch-002",
+              "merchant_id": "m-digital-888",
+              "merchant_name": "FastPay Games",
+              "merchant_category_code": "5816",
+              "amount_cents": 100,
+              "currency": "USD",
+              "card_brand": "mastercard",
+              "card_last_four": "1045",
+              "card_bin": "543210",
+              "is_card_present": false,
+              "entry_mode": "ecommerce",
+              "ip_address": "198.51.100.77",
+              "billing_country": "US",
+              "shipping_country": "US",
+              "customer_id": "cust-batch-2",
+              "is_recurring": false
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "total == 2",
+          "alerts array has length 2",
+          "high_risk_count >= 0",
+          "processing_time_ms > 0",
+          "each alert has: alert_id, fraud_type, risk_level, risk_score, evidence, recommendations"
+        ]
+      }
+    },
+    {
+      "id": "TC-016",
+      "title": "Feedback loop — update analysis decision in long-term memory",
+      "description": "Submit feedback on a previous analysis decision. Updates was_correct and feedback_notes columns in analysis_decisions table (NeonDB long-term memory). Validates the feedback loop that improves future analysis accuracy.",
+      "component_coverage": ["long_term_memory", "feedback_api"],
+      "precondition": "Run TC-002 (or any /v1/analyze case) first; capture the alert_id from the response and use it as decision_id here",
+      "tables_queried_by_agents": [
+        "analysis_decisions (UPDATE: was_correct, feedback_notes, feedback_at columns)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/feedback",
+        "json": {
+          "decision_id": "<COPY alert_id FROM PREVIOUS /v1/analyze RESPONSE>",
+          "was_correct": true,
+          "feedback_notes": "Confirmed legitimate transaction by manual review for demo run"
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "status == 'feedback_recorded'",
+          "decision_id echoed in response"
+        ],
+        "sql_validation": "SELECT decision_id, was_correct, feedback_notes, feedback_at FROM analysis_decisions WHERE decision_id = '<alert_id>'"
+      }
+    },
+    {
+      "id": "TC-017",
+      "title": "Redis session cleanup — verify short-term memory lifecycle",
+      "description": "Run an analysis and then validate Redis key lifecycle: session keys (stm:session:*, stm:agent:*) are created during processing and deleted after aggregation, while velocity keys (stm:velocity:*) persist.",
+      "component_coverage": ["redis_short_term", "redis_velocity_merchant", "orchestrator"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0014",
+          "merchant_id": "m-cleanup-01",
+          "merchant_name": "Cleanup Probe Merchant",
+          "merchant_category_code": "5999",
+          "amount_cents": 2500,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "1122",
+          "card_bin": "400000",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.33",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-cleanup-1",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "manual_validation": [
+          "DURING processing: Redis keys stm:agent:{session_id}:fraud_detection, stm:agent:{session_id}:compliance, stm:agent:{session_id}:risk_scoring exist",
+          "AFTER completion: all stm:session:{session_id}:* and stm:agent:{session_id}:* keys are deleted",
+          "PERSISTS: stm:velocity:merchant:m-cleanup-01 sorted set remains with transaction timestamp",
+          "Redis CLI: KEYS stm:velocity:merchant:m-cleanup-01 → should return the key",
+          "Redis CLI: ZCARD stm:velocity:merchant:m-cleanup-01 → count of velocity events"
+        ]
+      }
+    },
+    {
+      "id": "TC-018",
+      "title": "Merchant risk profile — empty table returns 404",
+      "description": "Query risk profile for a merchant when merchant_risk_profiles table is empty. Validates proper 404 error handling. After running TC-002 or TC-014, the table may have entries — then this validates profile data retrieval.",
+      "component_coverage": ["long_term_memory", "api"],
+      "tables_queried_by_agents": [
+        "merchant_risk_profiles (SELECT by merchant_id)"
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/v1/merchants/m-nonexistent-000/risk-profile"
+      },
+      "expected": {
+        "status_code": 404,
+        "body_assertions": [
+          "detail contains 'not found'"
+        ]
+      }
+    },
+    {
+      "id": "TC-019",
+      "title": "Merchant risk profile — retrieve after analysis populates data",
+      "description": "After running TC-002 or other analysis cases, merchant_risk_profiles should have data for analyzed merchants. Validates that orchestrator's record_investigation_complete() upserts merchant profile to long-term memory.",
+      "component_coverage": ["long_term_memory", "api"],
+      "precondition": "Run TC-002 first to populate merchant_risk_profiles for m-grocery-101",
+      "tables_queried_by_agents": [
+        "merchant_risk_profiles (SELECT by merchant_id m-grocery-101)"
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/v1/merchants/m-grocery-101/risk-profile"
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "merchant_id == 'm-grocery-101'",
+          "merchant_name == 'FreshCart Market'",
+          "historical_fraud_count >= 0",
+          "chargeback_ratio >= 0.0",
+          "average_risk_score >= 0.0",
+          "known_fraud_types is an array",
+          "is_high_risk is boolean"
+        ],
+        "note": "If 404, run TC-002 first to populate merchant profile"
+      }
+    },
+    {
+      "id": "TC-020",
+      "title": "High-risk merchant listing endpoint",
+      "description": "Retrieve all merchants flagged as high-risk. Returns array of merchant profiles where is_high_risk=true. May be empty initially.",
+      "component_coverage": ["long_term_memory", "api"],
+      "tables_queried_by_agents": [
+        "merchant_risk_profiles (SELECT WHERE is_high_risk = true)"
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/v1/merchants/high-risk"
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "response is an array",
+          "each item has: merchant_id, merchant_name, mcc, is_high_risk=true",
+          "may be empty if no high-risk merchants have been analyzed yet"
+        ]
+      }
+    },
+    {
+      "id": "TC-021",
+      "title": "Policy data availability — Visa and Mastercard rules",
+      "description": "Validates that policy_rules (6740 rows across visa/mastercard/unknown brands) and policy_documents (3440 rows from PDF sources) exist in NeonDB. These tables are used by compliance_agent's search_compliance_documents() tool and will be consumed by a future dedicated policy agent.",
+      "component_coverage": ["policy_data", "neondb"],
+      "request": {
+        "method": "SQL",
+        "query": "SELECT COUNT(*) AS policy_rules_count, COUNT(DISTINCT brand) AS brands FROM policy_rules"
+      },
+      "expected": {
+        "query_assertions": [
+          "policy_rules_count == 6740 (or > 6000)",
+          "brands == 3 (visa, mastercard, unknown)"
+        ]
+      },
+      "additional_sql_checks": [
+        "SELECT COUNT(*) FROM policy_documents → 3440",
+        "SELECT DISTINCT source FROM policy_documents → includes Visa dispute resolution PDF",
+        "SELECT DISTINCT brand FROM policy_rules → visa, mastercard, unknown"
+      ],
+      "table_basis": ["policy_rules", "policy_documents"]
+    },
+    {
+      "id": "TC-022",
+      "title": "Episodic memory retrieval — semantic recall of past investigations",
+      "description": "After running several analysis cases, episodic_memory table contains investigation episodes. This validates that the recall_past_investigations() RAG tool can semantically retrieve relevant past episodes. Run multiple analysis TCs first to populate episodic memory, then run TC-014 (investigation trigger) — the investigation agent should reference similar past episodes.",
+      "component_coverage": ["episodic_memory", "investigation_agent", "agentic_rag_tools"],
+      "precondition": "Run TC-002, TC-003, TC-005, TC-009 first to populate episodic_memory with diverse episodes",
+      "tables_queried_by_agents": [
+        "episodic_memory (vector similarity search with 1536-dim embeddings)",
+        "metadata filter by fraud_type, merchant_id, outcome"
+      ],
+      "validation_approach": "Run TC-014 (high-risk investigation) after populating episodic memory. Investigation agent's summary should reference similar past cases from recall_past_investigations().",
+      "expected": {
+        "manual_validation": [
+          "After TC-014: check analysis summary for references to past episodes",
+          "SQL: SELECT COUNT(*) FROM episodic_memory → should increase after each analysis",
+          "SQL: SELECT id, metadata->>'fraud_type', metadata->>'merchant_id', metadata->>'outcome' FROM episodic_memory ORDER BY metadata->>'timestamp' DESC LIMIT 10"
+        ]
+      }
+    },
+    {
+      "id": "TC-023",
+      "title": "Kafka event correlation — verify event sequence and correlation_id",
+      "description": "Run an analysis and verify all Kafka events share the same correlation_id, are published in correct order, and contain expected payloads.",
+      "component_coverage": ["kafka_events", "orchestrator"],
+      "precondition": "Confluent Cloud topic viewer or local Kafka consumer active",
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0015",
+          "merchant_id": "m-kafka-test-01",
+          "merchant_name": "Kafka Event Probe",
+          "merchant_category_code": "5999",
+          "amount_cents": 1500,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "5555",
+          "card_bin": "411111",
+          "is_card_present": true,
+          "entry_mode": "chip",
+          "ip_address": null,
+          "billing_country": "US",
+          "shipping_country": null,
+          "customer_id": "cust-kafka-01",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "manual_validation": [
+          "Kafka topic fraud.analysis.lifecycle: analysis.started + analysis.completed events with same correlation_id",
+          "Kafka topic fraud.detection.results: fraud.detected or fraud.cleared event",
+          "Kafka topic fraud.compliance.results: compliance.check.passed or compliance.violation.found event",
+          "Kafka topic fraud.risk.scores: risk.score.calculated event with risk_level payload",
+          "Kafka topic fraud.memory.events: memory.episode.recorded event",
+          "All events have same correlation_id (UUID format)",
+          "Event payloads contain: merchant_id, transaction_id, session_id"
+        ]
+      }
+    },
+    {
+      "id": "TC-024",
+      "title": "Rapid velocity test — multiple requests to trigger velocity detection",
+      "description": "Submit the same merchant transaction 3 times rapidly to trigger velocity detection in Redis. The check_velocity() RAG tool queries stm:velocity:merchant:{merchant_id} sorted set. On 3rd request, velocity count should be elevated, potentially increasing risk score.",
+      "component_coverage": [
+        "redis_velocity_merchant", "fraud_detection_agent", "risk_scoring_agent",
+        "orchestrator", "agentic_rag_tools"
+      ],
+      "execution_steps": [
+        "Step 1: Send request below → note risk_score as baseline",
+        "Step 2: Send same request with transaction_id txn-demo-0016b → risk_score may increase",
+        "Step 3: Send same request with transaction_id txn-demo-0016c → risk_score should reflect elevated velocity"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0016a",
+          "merchant_id": "m-vel-burst-01",
+          "merchant_name": "VelocityTest Shop",
+          "merchant_category_code": "5999",
+          "amount_cents": 9999,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "8888",
+          "card_bin": "411111",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.50",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-vel-burst",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "On 1st run: velocity count = 1 (baseline)",
+          "On 3rd run: velocity count >= 3 (elevated)",
+          "Risk score may increase across runs as velocity factor grows",
+          "evidence may reference velocity or transaction frequency on later runs"
+        ],
+        "redis_validation": [
+          "Redis CLI: ZCARD stm:velocity:merchant:m-vel-burst-01 → should equal number of runs",
+          "Redis CLI: ZRANGEBYSCORE stm:velocity:merchant:m-vel-burst-01 -inf +inf → all timestamps"
+        ]
+      }
+    },
+    {
+      "id": "TC-025",
+      "title": "Negative feedback loop — mark analysis as incorrect",
+      "description": "Submit negative feedback (was_correct=false) on a previous analysis decision. Validates that feedback_notes with correction context are stored for future agent learning.",
+      "component_coverage": ["long_term_memory", "feedback_api"],
+      "precondition": "Run TC-003 first; capture the alert_id from the response",
+      "tables_queried_by_agents": [
+        "analysis_decisions (UPDATE: was_correct=false, feedback_notes, feedback_at)"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/feedback",
+        "json": {
+          "decision_id": "<COPY alert_id FROM TC-003 RESPONSE>",
+          "was_correct": false,
+          "feedback_notes": "False positive: this was a legitimate micro-transaction from a known customer. Adjusting for future reference."
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "status == 'feedback_recorded'",
+          "decision_id echoed in response"
+        ],
+        "sql_validation": "SELECT was_correct, feedback_notes, feedback_at FROM analysis_decisions WHERE decision_id = '<alert_id>' → was_correct=false, feedback_notes contains 'False positive'"
+      }
+    }
+  ]
+}

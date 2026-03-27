@@ -288,10 +288,11 @@ class OrchestratorAgent:
         }
         risk_level = risk_level_map.get(risk_level_str, RiskLevel.MEDIUM)
 
-        # Determine fraud type from detection results
+        # Determine fraud type from detection results.
+        # Do not default unknown/no-fraud outcomes to a concrete fraud class.
         fraud_type_str = self._fraud_agent._extract_fraud_type(fraud_result)
         fraud_type_map = {ft.value: ft for ft in FraudType}
-        fraud_type = fraud_type_map.get(fraud_type_str, FraudType.CARD_TESTING)
+        fraud_type = fraud_type_map.get(fraud_type_str, FraudType.UNKNOWN)
 
         # Determine which agents participated
         agents_involved = ["fraud_detection", "compliance", "risk_scoring"]
@@ -363,9 +364,23 @@ class OrchestratorAgent:
 
         fraud_analysis = fraud_result.get("analysis", "")
         if fraud_analysis:
-            # Take first 2 sentences
-            sentences = fraud_analysis.split(".")[:2]
-            parts.append("Fraud Analysis: " + ".".join(sentences).strip() + ".")
+            fa_lower = fraud_analysis.lower()
+            if "no fraud detected" in fa_lower:
+                parts.append("Fraud detection found no strong fraud indicators.")
+            else:
+                # Extract the first clean prose line; skip markdown bullet lines.
+                clean_line = ""
+                for line in fraud_analysis.split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith(("-", "*", "#", "|", "•")) and len(line) > 20:
+                        clean_line = line[:300]
+                        break
+                if not clean_line:
+                    # Fallback: first non-empty flattened sentence without list markers
+                    flat = fraud_analysis.replace("\n", " ").replace("- ", " ").replace("* ", " ")
+                    clean_line = flat.split(".")[0].strip()[:300]
+                if clean_line:
+                    parts.append(clean_line + ".")
 
         risk_score = risk_result.get("risk_score", "N/A")
         risk_level = risk_result.get("risk_level", "N/A")

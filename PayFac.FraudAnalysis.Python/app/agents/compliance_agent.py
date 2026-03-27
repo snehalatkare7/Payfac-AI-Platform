@@ -110,9 +110,23 @@ IMPORTANT RULES:
             context=context,
         )
 
-        # Determine compliance status
+        # Determine compliance status.
+        # Naive `"violation" not in analysis` fails for negated phrases like
+        # "no violations found" — use explicit violation/pass signal matching.
         analysis = result.get("analysis", "").lower()
-        is_compliant = "violation" not in analysis
+        violation_signals = [
+            "violation found", "violation detected", "is in violation",
+            "compliance status: violation", "exceeds threshold",
+            "non-compliant", "compliance violation", "rule violation",
+            "breach detected",
+        ]
+        pass_signals = [
+            "compliance status: pass", "no violations", "no violation",
+            "no compliance issues", "compliant", "in compliance",
+        ]
+        has_violation = any(sig in analysis for sig in violation_signals)
+        has_pass = any(sig in analysis for sig in pass_signals)
+        is_compliant = has_pass or not has_violation
         violations = self._extract_violations(result)
 
         # Publish compliance result to Kafka

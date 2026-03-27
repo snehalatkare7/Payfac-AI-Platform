@@ -138,11 +138,16 @@ IMPORTANT RULES:
     def _extract_fraud_type(self, result: dict) -> str:
         """Extract fraud type from agent analysis text."""
         analysis = result.get("analysis", "").lower()
+        # Check for explicit no-fraud determination first to prevent keyword false-positives
+        # (e.g. the word 'velocity' appearing in tool-call output for a clean transaction)
+        no_fraud_phrases = ["no fraud detected", "no fraud", "not fraud", "fraud not detected"]
+        if any(phrase in analysis for phrase in no_fraud_phrases):
+            return "unknown"
         type_map = {
             "card testing": "card_testing",
             "bin attack": "bin_attack",
             "transaction laundering": "transaction_laundering",
-            "velocity": "velocity_abuse",
+            "velocity abuse": "velocity_abuse",   # require 'abuse'; 'velocity' alone is too broad
             "synthetic identity": "synthetic_identity",
             "account takeover": "account_takeover",
             "friendly fraud": "friendly_fraud",
@@ -164,11 +169,32 @@ IMPORTANT RULES:
         return 0.5
 
     def _extract_evidence(self, result: dict) -> list[str]:
-        """Extract evidence points from agent analysis."""
+        """Extract evidence points from agent analysis.
+
+        Skips structural section headers (Fraud Type, Confidence, Risk Score,
+        Evidence, Indicators, Recommendations) that the LLM emits as bullet
+        points but are NOT individual evidence items.
+        """
         analysis = result.get("analysis", "")
         evidence = []
+        # Section header prefixes to skip — these are output structure labels
+        skip_prefixes = (
+            "fraud type:", "confidence:", "risk score:", "evidence:",
+            "indicators:", "recommendations:", "red flags:", "summary:",
+            "overall risk score:", "risk level:",
+        )
         for line in analysis.split("\n"):
             line = line.strip()
-            if line.startswith("- ") or line.startswith("* "):
-                evidence.append(line[2:])
+            if not line:
+                continue
+            # Strip leading list markers to test the actual content
+            content = line.lstrip("- *•0123456789. )")
+            if not content or content.lower().startswith(skip_prefixes):
+                continue
+            # Only include lines that were bullet/numbered list items
+            if line.startswith(("- ", "* ", "• ")) or (
+                len(line) > 2 and line[0].isdigit() and line[1] in ". )"
+            ):
+                if len(content) > 10:  # ignore near-empty stubs
+                    evidence.append(content)
         return evidence[:10]

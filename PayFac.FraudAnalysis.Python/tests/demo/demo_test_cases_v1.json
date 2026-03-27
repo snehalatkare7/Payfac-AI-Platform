@@ -1,0 +1,573 @@
+{
+  "suite_name": "payfac_demo_end_to_end",
+  "generated_on": "2026-03-27",
+  "notes": [
+    "This suite is grounded in live NeonDB tables used by the application agents.",
+    "Data references below come from: fraud_patterns (7), compliance_documents (5), policy_rules (>6k), episodic_memory (6), analysis_decisions (6).",
+    "merchant_risk_profiles is currently empty in NeonDB, so profile lookup tests include expected 404 behavior."
+  ],
+  "data_references": {
+    "fraud_patterns": [
+      "pattern-card-testing-001",
+      "pattern-bin-attack-001",
+      "pattern-transaction-laundering-001",
+      "pattern-velocity-abuse-001",
+      "pattern-synthetic-identity-001",
+      "pattern-friendly-fraud-001",
+      "pattern-cross-merchant-collusion-001"
+    ],
+    "compliance_documents": [
+      "compliance-visa-vdmp-001",
+      "compliance-visa-vfmp-001",
+      "compliance-mc-ecm-001",
+      "compliance-mc-bram-001",
+      "compliance-amex-optblue-001"
+    ],
+    "policy_rules_examples": [
+      "0005439f-33e5-4a2a-8c5b-6b90659814a8",
+      "0012c5c6-dd4c-48cd-bf14-988fc676eb99",
+      "001738c0-50d3-448c-944e-b217a7c15bfb"
+    ]
+  },
+  "infra_validation_steps": {
+    "redis_short_term": [
+      "After each /v1/analyze call, verify temporary keys are created under stm:* and later cleared by end of workflow.",
+      "Verify velocity tracking key increments: stm:velocity:merchant:<merchant_id>."
+    ],
+    "kafka_events": [
+      "For each analyze case, verify events are published in order: analysis_started -> fraud_detected/compliance_result/risk_score_calculated -> analysis_completed.",
+      "Use Confluent Cloud topic viewer or consumer group to validate event payload correlation_id continuity."
+    ],
+    "long_term_memory": [
+      "Verify analysis_decisions row count increases after analyze calls.",
+      "Verify feedback updates populate was_correct/feedback_notes in analysis_decisions."
+    ],
+    "episodic_memory": [
+      "For escalated cases (risk_score > 60), verify episodic_memory receives a new row with narrative summary.",
+      "Use recall tools in investigation flow to validate semantic retrieval from episodic entries."
+    ],
+    "policy_data": [
+      "Policy tables exist and contain data (policy_rules, policy_documents).",
+      "Current orchestrator pipeline does not include a dedicated policy agent node; policy coverage in this suite is data-availability and extensibility validation."
+    ]
+  },
+  "test_cases": [
+    {
+      "id": "TC-001-health",
+      "title": "System health endpoint",
+      "component_coverage": ["api", "neondb", "redis", "kafka"],
+      "request": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "expected": {
+        "status_code": 200,
+        "body_fields": ["status", "version", "neondb_connected", "redis_connected", "kafka_connected"]
+      }
+    },
+    {
+      "id": "TC-002-legit-baseline",
+      "title": "Legitimate grocery transaction baseline",
+      "component_coverage": ["fraud_detection", "compliance", "risk_scoring", "redis_short_term", "kafka"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0001",
+          "merchant_id": "m-grocery-101",
+          "merchant_name": "FreshCart Market",
+          "merchant_category_code": "5411",
+          "amount_cents": 4599,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "4242",
+          "card_bin": "411111",
+          "is_card_present": true,
+          "entry_mode": "chip",
+          "ip_address": null,
+          "billing_country": "US",
+          "shipping_country": null,
+          "customer_id": "cust-1001",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "risk_score <= 40",
+          "risk_level in ['low','medium']",
+          "analyzed_by_agents includes fraud_detection, compliance, risk_scoring",
+          "analyzed_by_agents does not include 'investigation' (threshold: risk_score > 60)"
+        ]
+      },
+      "table_basis": ["compliance-visa-vdmp-001", "pattern-card-testing-001"]
+    },
+    {
+      "id": "TC-003-card-testing",
+      "title": "Card testing pattern (micro amount, CNP, repeated BIN)",
+      "component_coverage": ["fraud_detection", "risk_scoring", "redis_velocity", "kafka"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0002",
+          "merchant_id": "m-digital-777",
+          "merchant_name": "QuickTopup Services",
+          "merchant_category_code": "4814",
+          "amount_cents": 99,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "1388",
+          "card_bin": "411111",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.77",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-ct-01",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['card_testing','bin_attack','unknown']",
+          "risk_score >= 41",
+          "evidence contains transaction-pattern reasoning"
+        ]
+      },
+      "table_basis": ["pattern-card-testing-001", "fraud_cases"]
+    },
+    {
+      "id": "TC-004-bin-attack",
+      "title": "BIN attack scenario",
+      "component_coverage": ["fraud_detection", "redis_velocity", "risk_scoring", "investigation", "episodic_memory"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0003",
+          "merchant_id": "m-digital-888",
+          "merchant_name": "FastPay Games",
+          "merchant_category_code": "5816",
+          "amount_cents": 100,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "1029",
+          "card_bin": "543210",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "203.0.113.55",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-bin-01",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "risk_score > 60 triggers investigation node",
+          "analyzed_by_agents includes investigation",
+          "summary mentions elevated risk or deep investigation"
+        ]
+      },
+      "table_basis": ["pattern-bin-attack-001", "episodic_memory"]
+    },
+    {
+      "id": "TC-005-transaction-laundering",
+      "title": "Transaction laundering against BRAM guidance",
+      "component_coverage": ["fraud_detection", "compliance", "risk_scoring", "kafka"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0004",
+          "merchant_id": "m-retail-902",
+          "merchant_name": "Urban Gift Shop",
+          "merchant_category_code": "5947",
+          "amount_cents": 98500,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "8841",
+          "card_bin": "222300",
+          "is_card_present": false,
+          "entry_mode": "manual_keyed",
+          "ip_address": "192.0.2.44",
+          "billing_country": "US",
+          "shipping_country": "GB",
+          "customer_id": "cust-launder-88",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['transaction_laundering','unknown'] (depends on LLM detection)",
+          "fraud_type is never 'card_testing' (post-fix fallback to UNKNOWN)",
+          "compliance and fraud indicators should both be discussed",
+          "risk_level in ['high','critical','severe'] for strong signal cases"
+        ]
+      },
+      "table_basis": ["pattern-transaction-laundering-001", "compliance-mc-bram-001"]
+    },
+    {
+      "id": "TC-006-visa-compliance-vdmp",
+      "title": "Visa dispute monitoring context",
+      "component_coverage": ["compliance", "risk_scoring", "kafka"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0005",
+          "merchant_id": "m-visa-mon-303",
+          "merchant_name": "Prime Supplements",
+          "merchant_category_code": "5499",
+          "amount_cents": 3099,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "1182",
+          "card_bin": "400005",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "203.0.113.88",
+          "billing_country": "US",
+          "shipping_country": "CA",
+          "customer_id": "cust-comp-31",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "compliance response references visa programs/thresholds",
+          "risk score reflects compliance signal"
+        ]
+      },
+      "table_basis": ["compliance-visa-vdmp-001", "compliance-visa-vfmp-001"]
+    },
+    {
+      "id": "TC-007-mastercard-ecm",
+      "title": "Mastercard excessive chargeback monitoring",
+      "component_coverage": ["compliance", "risk_scoring"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0006",
+          "merchant_id": "m-subscription-330",
+          "merchant_name": "StreamPlus Global",
+          "merchant_category_code": "4899",
+          "amount_cents": 1299,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "6690",
+          "card_bin": "510510",
+          "is_card_present": false,
+          "entry_mode": "card_on_file",
+          "ip_address": "203.0.113.25",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-ecm-01",
+          "is_recurring": true
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "compliance analysis references ECM/BRAM where relevant",
+          "output includes coherent recommendations"
+        ]
+      },
+      "table_basis": ["compliance-mc-ecm-001", "compliance-mc-bram-001"]
+    },
+    {
+      "id": "TC-008-synthetic-identity",
+      "title": "Synthetic identity risk pattern",
+      "component_coverage": ["fraud_detection", "risk_scoring", "episodic_memory"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0007",
+          "merchant_id": "m-electronics-120",
+          "merchant_name": "NovaTech Outlet",
+          "merchant_category_code": "5732",
+          "amount_cents": 74999,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "5518",
+          "card_bin": "413245",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.140",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-new-0009",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud analysis discusses synthetic identity or elevated uncertainty",
+          "confidence between 0 and 1"
+        ]
+      },
+      "table_basis": ["pattern-synthetic-identity-001", "episodic_memory"]
+    },
+    {
+      "id": "TC-009-friendly-fraud",
+      "title": "Recurring digital friendly fraud case",
+      "component_coverage": ["fraud_detection", "compliance", "risk_scoring"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0008",
+          "merchant_id": "m-digitalmedia-615",
+          "merchant_name": "PlayArcade Plus",
+          "merchant_category_code": "5815",
+          "amount_cents": 1999,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "9090",
+          "card_bin": "476173",
+          "is_card_present": false,
+          "entry_mode": "card_on_file",
+          "ip_address": "192.0.2.120",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-ff-222",
+          "is_recurring": true
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "fraud_type in ['friendly_fraud','unknown']",
+          "recommendations include monitoring/review actions"
+        ]
+      },
+      "table_basis": ["pattern-friendly-fraud-001", "compliance-visa-vdmp-001"]
+    },
+    {
+      "id": "TC-010-collusion",
+      "title": "Cross-merchant collusion indicator",
+      "component_coverage": ["fraud_detection", "risk_scoring", "investigation", "episodic_memory"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0009",
+          "merchant_id": "m-network-a-001",
+          "merchant_name": "Alpha Commerce A",
+          "merchant_category_code": "5999",
+          "amount_cents": 25500,
+          "currency": "USD",
+          "card_brand": "mastercard",
+          "card_last_four": "7712",
+          "card_bin": "510510",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.201",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-collude-17",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "risk_score tends high when collusion indicators are present",
+          "investigation likely triggered for high score"
+        ]
+      },
+      "table_basis": ["pattern-cross-merchant-collusion-001", "episodic_memory"]
+    },
+    {
+      "id": "TC-011-amex-optblue",
+      "title": "Amex compliance routing",
+      "component_coverage": ["compliance", "risk_scoring"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0010",
+          "merchant_id": "m-travel-220",
+          "merchant_name": "SkyRoute Tickets",
+          "merchant_category_code": "4511",
+          "amount_cents": 132400,
+          "currency": "USD",
+          "card_brand": "amex",
+          "card_last_four": "3401",
+          "card_bin": "371449",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "203.0.113.199",
+          "billing_country": "US",
+          "shipping_country": "DE",
+          "customer_id": "cust-amex-4431",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "compliance checks should include Amex OptBlue guidance",
+          "response schema remains consistent"
+        ]
+      },
+      "table_basis": ["compliance-amex-optblue-001"]
+    },
+    {
+      "id": "TC-012-batch-analysis",
+      "title": "Batch mixed scenario",
+      "component_coverage": ["api_batch", "fraud_detection", "compliance", "risk_scoring", "kafka"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze/batch",
+        "json": {
+          "transactions": [
+            {
+              "transaction_id": "txn-demo-0011",
+              "merchant_id": "m-grocery-101",
+              "merchant_name": "FreshCart Market",
+              "merchant_category_code": "5411",
+              "amount_cents": 3299,
+              "currency": "USD",
+              "card_brand": "visa",
+              "card_last_four": "4242",
+              "card_bin": "411111",
+              "is_card_present": true,
+              "entry_mode": "chip",
+              "ip_address": null,
+              "billing_country": "US",
+              "shipping_country": null,
+              "customer_id": "cust-batch-1",
+              "is_recurring": false
+            },
+            {
+              "transaction_id": "txn-demo-0012",
+              "merchant_id": "m-digital-888",
+              "merchant_name": "FastPay Games",
+              "merchant_category_code": "5816",
+              "amount_cents": 100,
+              "currency": "USD",
+              "card_brand": "mastercard",
+              "card_last_four": "1045",
+              "card_bin": "543210",
+              "is_card_present": false,
+              "entry_mode": "ecommerce",
+              "ip_address": "198.51.100.77",
+              "billing_country": "US",
+              "shipping_country": "US",
+              "customer_id": "cust-batch-2",
+              "is_recurring": false
+            }
+          ]
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "total == 2",
+          "alerts length <= 2",
+          "high_risk_count >= 0"
+        ]
+      }
+    },
+    {
+      "id": "TC-013-feedback-loop",
+      "title": "Feedback updates long-term decision memory",
+      "component_coverage": ["long_term_memory", "feedback_api"],
+      "precondition": "Run TC-002 (or any fraud analysis) first; capture the alert_id from the response and use it as decision_id here",
+      "request": {
+        "method": "POST",
+        "path": "/v1/feedback",
+        "json": {
+          "decision_id": "<COPY alert_id FROM PREVIOUS /v1/analyze RESPONSE>",
+          "was_correct": true,
+          "feedback_notes": "Confirmed by manual review for demo run"
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "body_assertions": [
+          "status == 'feedback_recorded'",
+          "decision_id echoed in response"
+        ],
+        "sql_validation": "SELECT decision_id, was_correct, feedback_notes FROM analysis_decisions WHERE decision_id = '<replace-with-alert-id>'"
+      }
+    },
+    {
+      "id": "TC-014-short-memory-cleanup",
+      "title": "Redis short-term session cleanup after orchestration",
+      "component_coverage": ["redis_short_term", "orchestrator"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/analyze",
+        "json": {
+          "transaction_id": "txn-demo-0013",
+          "merchant_id": "m-cleanup-01",
+          "merchant_name": "Cleanup Probe Merchant",
+          "merchant_category_code": "5999",
+          "amount_cents": 2500,
+          "currency": "USD",
+          "card_brand": "visa",
+          "card_last_four": "1122",
+          "card_bin": "400000",
+          "is_card_present": false,
+          "entry_mode": "ecommerce",
+          "ip_address": "198.51.100.33",
+          "billing_country": "US",
+          "shipping_country": "US",
+          "customer_id": "cust-cleanup-1",
+          "is_recurring": false
+        }
+      },
+      "expected": {
+        "status_code": 200,
+        "manual_validation": [
+          "Check Redis keys stm:session:* and stm:agent:* for the run session are removed after completion",
+          "Velocity key stm:velocity:merchant:m-cleanup-01 should remain/increment as event history"
+        ]
+      }
+    },
+    {
+      "id": "TC-015-long-term-profile-endpoint-empty",
+      "title": "Merchant profile endpoint behavior with empty merchant_risk_profiles",
+      "component_coverage": ["long_term_memory", "api"],
+      "request": {
+        "method": "GET",
+        "path": "/v1/merchants/m-grocery-101/risk-profile"
+      },
+      "expected": {
+        "status_code": 404,
+        "body_assertions": [
+          "detail contains 'not found'"
+        ]
+      }
+    },
+    {
+      "id": "TC-016-policy-data-availability",
+      "title": "Policy data presence check for future policy-agent demos",
+      "component_coverage": ["policy_data", "neondb"],
+      "request": {
+        "method": "SQL",
+        "query": "SELECT COUNT(*) AS policy_rules_count, COUNT(DISTINCT brand) AS brands FROM policy_rules"
+      },
+      "expected": {
+        "query_assertions": [
+          "policy_rules_count > 0",
+          "brands >= 2"
+        ]
+      },
+      "table_basis": [
+        "policy_rules",
+        "policy_documents"
+      ]
+    }
+  ]
+}

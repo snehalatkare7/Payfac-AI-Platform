@@ -6,6 +6,7 @@ from enum import Enum
 class FraudType(str, Enum):
     """Identifies the category of fraud detected or suspected."""
 
+    UNKNOWN = "unknown"
     CARD_TESTING = "card_testing"
     TRANSACTION_LAUNDERING = "transaction_laundering"
     EXCESSIVE_CHARGEBACKS = "excessive_chargebacks"
