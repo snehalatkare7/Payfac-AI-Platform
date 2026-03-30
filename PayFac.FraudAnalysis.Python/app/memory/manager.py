@@ -74,6 +74,7 @@ class MemoryManager:
         session_id: str,
         merchant_id: Optional[str] = None,
         situation_description: Optional[str] = None,
+        exclude_exact_transaction_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Build a comprehensive context object for an agent by pulling
@@ -116,6 +117,12 @@ class MemoryManager:
             episodes = await self.episodic.recall_similar_episodes(
                 situation_description, top_k=3
             )
+            if exclude_exact_transaction_id:
+                txid = exclude_exact_transaction_id.lower()
+                episodes = [
+                    ep for ep in episodes
+                    if txid not in (ep.get("content", "") or "").lower()
+                ]
             context["episodic"] = episodes
 
         return context

@@ -43,6 +43,9 @@ class Transaction(BaseModel):
             f"{'Card-present' if self.is_card_present else 'Card-not-present'}, "
             f"Entry mode: {self.entry_mode}, "
             f"Billing country: {self.billing_country}, "
+            f"Shipping country: {self.shipping_country or 'N/A'}, "
+            f"IP address: {self.ip_address or 'N/A'}, "
+            f"Customer ID: {self.customer_id or 'N/A'}, "
             f"{'Recurring' if self.is_recurring else 'One-time'}, "
             f"Time: {self.timestamp.isoformat()}"
         )

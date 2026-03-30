@@ -98,12 +98,21 @@ class LongTermMemory:
             ON CONFLICT (merchant_id) DO UPDATE SET
                 merchant_name = EXCLUDED.merchant_name,
                 mcc = EXCLUDED.mcc,
-                historical_fraud_count = EXCLUDED.historical_fraud_count,
-                chargeback_ratio = EXCLUDED.chargeback_ratio,
-                average_risk_score = EXCLUDED.average_risk_score,
+                historical_fraud_count = GREATEST(
+                    merchant_risk_profiles.historical_fraud_count,
+                    EXCLUDED.historical_fraud_count
+                ),
+                chargeback_ratio = GREATEST(
+                    merchant_risk_profiles.chargeback_ratio,
+                    EXCLUDED.chargeback_ratio
+                ),
+                average_risk_score = GREATEST(
+                    merchant_risk_profiles.average_risk_score,
+                    EXCLUDED.average_risk_score
+                ),
                 known_fraud_types = EXCLUDED.known_fraud_types,
                 last_review_date = EXCLUDED.last_review_date,
-                is_high_risk = EXCLUDED.is_high_risk,
+                is_high_risk = merchant_risk_profiles.is_high_risk OR EXCLUDED.is_high_risk,
                 notes = EXCLUDED.notes,
                 updated_at = NOW()
             """,
@@ -275,7 +284,7 @@ class LongTermMemory:
         feedback_notes: str = "",
     ) -> None:
         """Update a previous decision with correctness feedback."""
-        await self._db.execute_command(
+        status = await self._db.execute_command(
             """
             UPDATE analysis_decisions
             SET was_correct = $2, feedback_notes = $3, feedback_at = NOW()
@@ -285,6 +294,10 @@ class LongTermMemory:
             was_correct,
             feedback_notes,
         )
+        # asyncpg returns e.g. "UPDATE 1" or "UPDATE 0"
+        rows_affected = int(status.split()[-1]) if status else 0
+        if rows_affected == 0:
+            raise ValueError(f"Decision '{decision_id}' not found")
         logger.info(
             "Decision feedback recorded: %s (correct=%s)", decision_id, was_correct
         )

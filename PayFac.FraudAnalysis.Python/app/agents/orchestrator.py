@@ -186,6 +186,7 @@ class OrchestratorAgent:
 
         result = await self._fraud_agent.analyze_transaction(
             transaction_text=transaction_text,
+            transaction_id=state["transaction"].get("transaction_id", ""),
             session_id=state["session_id"],
             merchant_id=state["merchant_id"],
             correlation_id=state["correlation_id"],
@@ -201,10 +202,17 @@ class OrchestratorAgent:
         )
 
         fraud_analysis = state.get("fraud_result", {}).get("analysis", "")
-        card_brand = state["transaction"].get("card_brand", "all")
+        transaction = state["transaction"]
+        card_brand = transaction.get("card_brand", "all")
+        transaction_context = transaction.get("analysis_text", "")
+
+        analysis_context = (
+            f"TRANSACTION DETAILS:\n{transaction_context}\n\n"
+            f"FRAUD DETECTION FINDINGS:\n{fraud_analysis or 'No findings from fraud detection.'}"
+        )
 
         result = await self._compliance_agent.check_compliance(
-            analysis_context=fraud_analysis,
+            analysis_context=analysis_context,
             session_id=state["session_id"],
             merchant_id=state["merchant_id"],
             card_brand=card_brand,
@@ -224,6 +232,7 @@ class OrchestratorAgent:
             session_id=state["session_id"],
             merchant_id=state["merchant_id"],
             correlation_id=state["correlation_id"],
+            transaction=state["transaction"],
         )
 
         needs_investigation = result.get("risk_score", 0) > 60
@@ -324,6 +333,7 @@ class OrchestratorAgent:
             else InvestigationOutcome.MONITORING
         )
         episode = InvestigationEpisode(
+            episode_id=alert.alert_id,   # pin to alert_id so feedback lookup works
             merchant_id=state["merchant_id"],
             transaction_ids=[state["transaction"].get("transaction_id", "")],
             fraud_type=fraud_type,
@@ -333,16 +343,36 @@ class OrchestratorAgent:
             agents_involved=agents_involved,
         )
 
-        # Build merchant risk profile update
-        known_types = [fraud_type] if fraud_type != FraudType.UNKNOWN else []
+        # Build merchant risk profile update.
+        # Fetch existing profile so we can accumulate history instead of
+        # blindly overwriting with the current run's values (which caused
+        # a downward-spiral where each run lowered the stored score).
+        existing_profile = await self._memory.long_term.get_merchant_profile(
+            state["merchant_id"]
+        )
+        prev_fraud_count = existing_profile.historical_fraud_count if existing_profile else 0
+        prev_avg_score = existing_profile.average_risk_score if existing_profile else 0.0
+        prev_types = existing_profile.known_fraud_types if existing_profile else []
+
+        new_fraud_count = prev_fraud_count + (1 if risk_score > 60 else 0)
+        # Running average: blend previous average with current score
+        if prev_avg_score > 0:
+            new_avg_score = max(prev_avg_score, float(risk_score))
+        else:
+            new_avg_score = float(risk_score)
+
+        known_types = list(set(
+            prev_types + ([fraud_type] if fraud_type != FraudType.UNKNOWN else [])
+        ))
+
         merchant_profile = MerchantRiskProfile(
             merchant_id=state["merchant_id"],
             merchant_name=state["transaction"].get("merchant_name", ""),
             mcc=state["transaction"].get("merchant_category_code", ""),
-            historical_fraud_count=1 if risk_score > 60 else 0,
-            average_risk_score=float(risk_score),
+            historical_fraud_count=new_fraud_count,
+            average_risk_score=new_avg_score,
             known_fraud_types=known_types,
-            is_high_risk=risk_score > 60,
+            is_high_risk=new_avg_score > 60 or risk_score > 60,
         )
 
         await self._memory.record_investigation_complete(
@@ -380,7 +410,18 @@ class OrchestratorAgent:
         fraud_analysis = fraud_result.get("analysis", "")
         if fraud_analysis:
             fa_lower = fraud_analysis.lower()
-            if "no fraud detected" in fa_lower:
+            # Only use the generic "no strong indicators" summary when the
+            # analysis genuinely concluded no fraud — not when it merely
+            # contains the substring in passing (e.g. "no fraud patterns found").
+            import re
+            is_clean = (
+                re.search(r"\bfraud type[:\s]*(no fraud|none)\b", fa_lower)
+                or re.search(r"\bdetermination[:\s]*no fraud\b", fa_lower)
+            ) and not any(
+                sig in fa_lower
+                for sig in ("high risk", "suspicious", "mismatch", "elevated", "laundering", "flagged")
+            )
+            if is_clean:
                 parts.append("Fraud detection found no strong fraud indicators.")
             else:
                 # Extract the first clean prose line; skip markdown bullet lines.

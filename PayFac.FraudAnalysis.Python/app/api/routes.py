@@ -232,11 +232,14 @@ async def submit_feedback(
     This feedback is stored in long-term memory and used to
     improve future analysis accuracy (feedback loop).
     """
-    await memory.long_term.update_decision_feedback(
-        decision_id=request.decision_id,
-        was_correct=request.was_correct,
-        feedback_notes=request.feedback_notes,
-    )
+    try:
+        await memory.long_term.update_decision_feedback(
+            decision_id=request.decision_id,
+            was_correct=request.was_correct,
+            feedback_notes=request.feedback_notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     return {"status": "feedback_recorded", "decision_id": request.decision_id}
 
 

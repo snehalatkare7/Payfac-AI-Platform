@@ -90,6 +90,7 @@ IMPORTANT RULES:
     async def analyze_transaction(
         self,
         transaction_text: str,
+        transaction_id: str,
         session_id: str,
         merchant_id: str,
         correlation_id: str,
@@ -106,6 +107,7 @@ IMPORTANT RULES:
             session_id=session_id,
             merchant_id=merchant_id,
             situation_description=transaction_text,
+            exclude_exact_transaction_id=transaction_id,
         )
 
         # Invoke the agent (triggers Agentic RAG loop)
@@ -128,7 +130,7 @@ IMPORTANT RULES:
                 fraud_type=self._extract_fraud_type(result),
                 confidence=self._extract_confidence(result),
                 evidence=self._extract_evidence(result),
-                transaction_id="",  # Extracted from transaction_text
+                transaction_id=transaction_id,
                 merchant_id=merchant_id,
             )
             self.publish_event(event)
@@ -138,10 +140,28 @@ IMPORTANT RULES:
     def _extract_fraud_type(self, result: dict) -> str:
         """Extract fraud type from agent analysis text."""
         analysis = result.get("analysis", "").lower()
-        # Check for explicit no-fraud determination first to prevent keyword false-positives
-        # (e.g. the word 'velocity' appearing in tool-call output for a clean transaction)
-        no_fraud_phrases = ["no fraud detected", "no fraud", "not fraud", "fraud not detected"]
-        if any(phrase in analysis for phrase in no_fraud_phrases):
+        # Check for an explicit, unambiguous no-fraud determination.
+        # Only match phrases that clearly state the *conclusion* is no fraud,
+        # NOT incidental occurrences like "no fraud patterns found" or
+        # "no fraud history" which appear in high-risk analyses too.
+        import re
+        no_fraud_patterns = [
+            r"\bno fraud detected\b",
+            r"\bfraud not detected\b",
+            r"\bfraud type[:\s]*no fraud\b",
+            r"\bfraud type[:\s]*none\b",
+            r"\bdetermination[:\s]*no fraud\b",
+        ]
+        # Only treat as no-fraud if the conclusion phrase appears AND there
+        # are no strong risk indicator phrases that contradict it.
+        risk_contradictions = [
+            "high risk", "transaction laundering", "suspicious",
+            "country mismatch", "manual keyed", "manual_keyed",
+            "elevated risk", "card-not-present", "cross-border",
+        ]
+        has_no_fraud_conclusion = any(re.search(p, analysis) for p in no_fraud_patterns)
+        has_risk_signals = any(sig in analysis for sig in risk_contradictions)
+        if has_no_fraud_conclusion and not has_risk_signals:
             return "unknown"
         type_map = {
             "card testing": "card_testing",
@@ -154,9 +174,71 @@ IMPORTANT RULES:
             "collusion": "cross_merchant_collusion",
         }
         for keyword, fraud_type in type_map.items():
-            if keyword in analysis:
+            if self._has_affirmative_mention(analysis, keyword):
                 return fraud_type
+
+        # Heuristic laundering catch for common narrative phrasing that may not
+        # include the exact token "transaction laundering".
+        if (
+            "mcc mismatch" in analysis
+            and any(sig in analysis for sig in ("international shipping", "cross-border", "shipping country", "billing country"))
+        ):
+            return "transaction_laundering"
+
+        if "undisclosed business" in analysis or "merchant category mismatch" in analysis:
+            return "transaction_laundering"
+
+        # High-risk MCC (gambling 7995, money transfer 6051, etc.) with
+        # cross-border or manual-keyed signals → transaction laundering.
+        high_risk_mcc_keywords = ["7995", "gambling", "casino", "6051", "money transfer"]
+        has_high_risk_mcc = any(k in analysis for k in high_risk_mcc_keywords)
+        has_cross_border = any(
+            sig in analysis
+            for sig in ("country mismatch", "cross-border", "shipping country", "billing country")
+        )
+        has_manual_cnp = ("manual keyed" in analysis or "manual_keyed" in analysis) and (
+            "card-not-present" in analysis or "card not present" in analysis or "cnp" in analysis
+        )
+        if has_high_risk_mcc and (has_cross_border or has_manual_cnp):
+            return "transaction_laundering"
+
+        # Generic elevated-risk catch: if the analysis mentions several
+        # strong risk signals but no specific type keyword, still flag.
+        strong_signals = [
+            "high risk", "suspicious", "elevated risk",
+            "country mismatch", "manual keyed", "flagged",
+        ]
+        signal_count = sum(1 for s in strong_signals if s in analysis)
+        if signal_count >= 3:
+            return "transaction_laundering"
+
         return "unknown"
+
+    @staticmethod
+    def _has_affirmative_mention(text_lower: str, keyword: str) -> bool:
+        """Check if *keyword* appears in affirmative (non-negated) context.
+
+        Returns ``True`` when at least one occurrence of *keyword* is
+        **not** preceded by a negation word within the same sentence.
+        """
+        import re
+        idx = 0
+        neg_re = re.compile(
+            r"\b(no|not|without|nor|neither|lack\s+of|absence\s+of|no\s+abnormal)\b"
+        )
+        while True:
+            pos = text_lower.find(keyword, idx)
+            if pos == -1:
+                return False
+            sent_start = max(
+                text_lower.rfind(".", 0, pos),
+                text_lower.rfind("!", 0, pos),
+                text_lower.rfind("\n", 0, pos),
+            )
+            prefix = text_lower[sent_start + 1 : pos]
+            if not neg_re.search(prefix):
+                return True
+            idx = pos + len(keyword)
 
     def _extract_confidence(self, result: dict) -> float:
         """Extract confidence score from agent analysis."""
