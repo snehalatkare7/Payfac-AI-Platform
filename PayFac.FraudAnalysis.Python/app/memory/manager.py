@@ -125,6 +125,7 @@ class MemoryManager:
         session_id: str,
         episode: InvestigationEpisode,
         merchant_profile_update: Optional[MerchantRiskProfile] = None,
+        risk_score: int = 0,
     ) -> None:
         """
         Record the completion of an investigation across all memory tiers.
@@ -145,7 +146,7 @@ class MemoryManager:
             merchant_id=episode.merchant_id,
             transaction_ids=episode.transaction_ids,
             fraud_type=episode.fraud_type,
-            risk_score=0,  # Will be updated by risk agent
+            risk_score=risk_score,
             decision=episode.outcome.value,
         )
 

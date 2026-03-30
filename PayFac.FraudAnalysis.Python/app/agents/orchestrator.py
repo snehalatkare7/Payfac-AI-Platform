@@ -67,6 +67,7 @@ from app.models import (
     RiskLevel,
     InvestigationEpisode,
     InvestigationOutcome,
+    MerchantRiskProfile,
     Transaction,
 )
 
@@ -310,7 +311,7 @@ class OrchestratorAgent:
                 fraud_result, compliance_result, risk_result, investigation_result,
             ),
             evidence=self._fraud_agent._extract_evidence(fraud_result),
-            recommendations=risk_result.get("factors", []),
+            recommendations=self._risk_agent._extract_factors(risk_result),
             compliance_violations=[],
             analyzed_by_agents=agents_involved,
             confidence=self._fraud_agent._extract_confidence(fraud_result),
@@ -332,9 +333,23 @@ class OrchestratorAgent:
             agents_involved=agents_involved,
         )
 
+        # Build merchant risk profile update
+        known_types = [fraud_type] if fraud_type != FraudType.UNKNOWN else []
+        merchant_profile = MerchantRiskProfile(
+            merchant_id=state["merchant_id"],
+            merchant_name=state["transaction"].get("merchant_name", ""),
+            mcc=state["transaction"].get("merchant_category_code", ""),
+            historical_fraud_count=1 if risk_score > 60 else 0,
+            average_risk_score=float(risk_score),
+            known_fraud_types=known_types,
+            is_high_risk=risk_score > 60,
+        )
+
         await self._memory.record_investigation_complete(
             session_id=state["session_id"],
             episode=episode,
+            merchant_profile_update=merchant_profile,
+            risk_score=risk_score,
         )
 
         # Publish completion event

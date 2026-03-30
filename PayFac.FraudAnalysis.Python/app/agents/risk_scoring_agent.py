@@ -159,11 +159,18 @@ IMPORTANT:
         """Extract numeric risk score from agent analysis."""
         import re
         analysis = result.get("analysis", "")
-        match = re.search(r"[Oo]verall\s*[Rr]isk\s*[Ss]core[:\s]*(\d+)", analysis)
+        # Strip markdown bold markers so patterns like "**Overall Risk Score**: 65" become plain text
+        clean = analysis.replace("**", "")
+        match = re.search(r"[Oo]verall\s*[Rr]isk\s*[Ss]core[:\s]*(\d+)", clean)
         if match:
             return min(int(match.group(1)), 100)
 
-        match = re.search(r"(\d+)\s*/\s*100", analysis)
+        match = re.search(r"(\d+)\s*/\s*100", clean)
+        if match:
+            return min(int(match.group(1)), 100)
+
+        # Try looser pattern: "Risk Score" followed by a number
+        match = re.search(r"[Rr]isk\s*[Ss]core[:\s]*(\d+)", clean)
         if match:
             return min(int(match.group(1)), 100)
 
@@ -182,14 +189,22 @@ IMPORTANT:
         return "severe"
 
     def _extract_factors(self, result: dict) -> list[str]:
-        """Extract key risk factors from analysis."""
-        analysis = result.get("analysis", "")
+        """Extract key risk factors and recommended actions from analysis."""
+        analysis = result.get("analysis", "").replace("**", "")
         factors = []
         capture = False
         for line in analysis.split("\n"):
-            line = line.strip()
-            if "factor" in line.lower() or "risk" in line.lower():
+            stripped = line.strip()
+            low = stripped.lower()
+            # Start capturing after factor/recommendation headings
+            if any(kw in low for kw in ("key risk factor", "recommended action", "risk factor")):
                 capture = True
-            if capture and (line.startswith("- ") or line.startswith("* ")):
-                factors.append(line[2:])
-        return factors[:5]
+                continue
+            # Stop capturing on next major section heading (non-bullet line with colon)
+            if capture and stripped and not stripped.startswith(("-", "*", "•")) and ":" in stripped and len(stripped.split()) <= 6:
+                capture = False
+            if capture and (stripped.startswith("- ") or stripped.startswith("* ") or stripped.startswith("• ")):
+                content = stripped.lstrip("- *•").strip()
+                if content and len(content) > 10:
+                    factors.append(content)
+        return factors[:10]

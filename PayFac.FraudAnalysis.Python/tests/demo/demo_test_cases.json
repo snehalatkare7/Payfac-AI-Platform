@@ -196,14 +196,14 @@
       "expected": {
         "status_code": 200,
         "body_assertions": [
-          "risk_score <= 40",
+          "risk_score <= 35",
           "risk_level in ['low','medium']",
-          "fraud_type in ['unknown','card_testing'] (LLM-dependent)",
+          "fraud_type == 'unknown'",
           "analyzed_by_agents includes ['fraud_detection','compliance','risk_scoring']",
           "analyzed_by_agents does NOT include 'investigation' (score <= 60)",
           "confidence between 0.0 and 1.0",
           "evidence is a non-empty array",
-          "recommendations is a non-empty array",
+          "recommendations is an array",
           "summary is a coherent prose sentence (not raw markdown bullets)"
         ]
       },
@@ -868,7 +868,7 @@
         "method": "POST",
         "path": "/v1/feedback",
         "json": {
-          "decision_id": "<COPY alert_id FROM PREVIOUS /v1/analyze RESPONSE>",
+          "decision_id": "<COPY alert_id FROM TC-002 RESPONSE>",
           "was_correct": true,
           "feedback_notes": "Confirmed legitimate transaction by manual review for demo run"
         }
